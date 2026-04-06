@@ -1,50 +1,144 @@
-# Welcome to your Expo app 👋
+# Quickora Driver App
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+React Native (Expo SDK 54 + TypeScript) driver-side app for the Quickora taxi & logistics platform.
 
-## Get started
+---
 
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## Setup
 
 ```bash
-npm run reset-project
+# 1. Copy this folder into your blank Expo SDK 54 project
+# 2. Install dependencies
+npm install
+
+# 3. Copy your font files (from the customer app) into assets/fonts/
+#    Required: Satoshi-Regular.otf, Satoshi-Medium.otf, Satoshi-Bold.otf, Satoshi-Black.otf
+
+# 4. Start
+npx expo start
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+---
 
-## Learn more
+## App Flow
 
-To learn more about developing your project with Expo, look at the following resources:
+```
+Launch
+  └── Splash (index.tsx)
+        ├── No session → Login
+        │     └── OTP → New user → Register → Onboarding
+        │                         Existing → Onboarding (if unsubmitted)
+        │                                    Bookings  (if verified)
+        │
+        └── Session exists
+              ├── rider_status: unsubmitted → Onboarding (select vehicle)
+              ├── rider_status: pending     → Pending screen
+              ├── rider_status: rejected    → Rejected + re-submit
+              └── rider_status: verified    → Bookings tab
+```
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+---
 
-## Join the community
+## Screens
 
-Join our community of developers creating universal apps.
+### Auth
+| File | Screen |
+|------|--------|
+| `(auth)/login.tsx` | Phone number entry |
+| `(auth)/otp.tsx` | 6-digit OTP verification |
+| `(auth)/register.tsx` | Name input for new drivers |
+| `(auth)/onboarding.tsx` | Vehicle category + type selection / pending state |
+| `(auth)/documents.tsx` | Upload Aadhaar, PAN, Driving Licence + vehicle number |
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+### Main Tabs (only for verified drivers)
+| File | Screen |
+|------|--------|
+| `(tabs)/bookings.tsx` | Online/offline toggle, shows 1 pending ride at a time |
+| `(tabs)/history.tsx` | Completed & cancelled ride history with earnings |
+| `(tabs)/profile.tsx` | Earnings, stats, documents, help, logout |
+
+### Active Ride
+| File | Screen |
+|------|--------|
+| `active-ride/[id].tsx` | Full-screen ride management — back button BLOCKED until complete |
+
+---
+
+## Key Business Rules Implemented
+
+1. **One booking at a time** — `acceptRide()` checks for existing active rides before accepting
+2. **Show only 1 pending ride** — `availableRides.slice(0, 1)` in bookings screen
+3. **App locked during active ride** — `BackHandler` blocks hardware back, no tab navigation
+4. **Unverified drivers blocked** — Tab layout redirects to onboarding if `rider_status !== 'verified'`
+5. **Realtime updates** — Supabase realtime channels for new bookings + ride status changes
+6. **Driver earnings** — 80% of fare, recorded in `driver_earnings` table on completion
+
+---
+
+## Supabase Requirements
+
+### Storage Bucket
+Create a bucket called `driver-documents` (public read, authenticated write):
+```sql
+INSERT INTO storage.buckets (id, name, public) VALUES ('driver-documents', 'driver-documents', true);
+```
+
+### RPC Function for incrementing total_rides
+```sql
+CREATE OR REPLACE FUNCTION increment_driver_rides(driver_id uuid)
+RETURNS void AS $$
+  UPDATE public.users
+  SET total_rides = total_rides + 1, updated_at = NOW()
+  WHERE id = driver_id;
+$$ LANGUAGE sql;
+```
+
+### RLS Policies needed on `rides` table
+```sql
+-- Drivers can read pending rides
+CREATE POLICY "Drivers read pending rides" ON rides
+  FOR SELECT USING (status = 'pending' AND driver_id IS NULL);
+
+-- Drivers can update their own rides
+CREATE POLICY "Drivers update own rides" ON rides
+  FOR UPDATE USING (driver_id = auth.uid());
+```
+
+---
+
+## Demo Credentials
+- Any phone number works
+- OTP: `123456`
+
+---
+
+## Folder Structure
+```
+DriverApp/
+├── app/
+│   ├── _layout.tsx          # Root layout with AuthProvider
+│   ├── index.tsx             # Splash/redirect
+│   ├── (auth)/
+│   │   ├── login.tsx
+│   │   ├── otp.tsx
+│   │   ├── register.tsx
+│   │   ├── onboarding.tsx
+│   │   └── documents.tsx
+│   ├── (tabs)/
+│   │   ├── bookings.tsx      # Main screen
+│   │   ├── history.tsx
+│   │   └── profile.tsx
+│   └── active-ride/
+│       └── [id].tsx          # Locked ride screen
+├── config/
+│   └── supabase.ts
+├── constants/
+│   └── colors.ts
+├── contexts/
+│   └── auth-context.tsx
+├── services/
+│   ├── auth.service.ts
+│   └── driver.service.ts
+└── types/
+    └── index.ts
+```

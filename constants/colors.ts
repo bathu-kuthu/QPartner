@@ -1,0 +1,33 @@
+export const colors = {
+    primary: '#1565C0',
+    primaryDark: '#0B1F3A',
+    primaryLight: '#E8F0FE',
+    accent: '#1976D2',
+    background: '#F4F7FC',
+    surface: '#FFFFFF',
+    surfaceLight: '#F8FAFF',
+    text: '#0B1F3A',
+    textSecondary: '#5A7395',
+    textMuted: '#98AABF',
+    success: '#00897B',
+    successLight: '#E0F2F1',
+    error: '#E53935',
+    errorLight: '#FFEBEE',
+    warning: '#FFA000',
+    warningLight: '#FFF8E1',
+    info: '#1565C0',
+    border: '#D8E4F0',
+    navy: '#0B1F3A',
+    navyMid: '#1A3557',
+    white: '#FFFFFF',
+    overlay: 'rgba(11, 31, 58, 0.4)',
+    green: '#00897B',
+    orange: '#F57C00',
+};
+
+export const Fonts = {
+    regular: 'Satoshi-Regular',
+    medium: 'Satoshi-Medium',
+    bold: 'Satoshi-Bold',
+    black: 'Satoshi-Black',
+};
