@@ -3,6 +3,7 @@ import * as Location from 'expo-location';
 import { DriverService } from './driver.service';
 import { NotificationService } from './notification.service';
 import * as SecureStore from 'expo-secure-store';
+import { NativeBridgeService } from './native-bridge.service';
 
 export const BACKGROUND_RIDE_TASK = 'BACKGROUND_RIDE_POLLING';
 
@@ -55,6 +56,10 @@ TaskManager.defineTask(BACKGROUND_RIDE_TASK, async ({ data, error }: any) => {
                 
                 const newRide = rides[0];
                 if (!informedRides.includes(newRide.id)) {
+                    // Bring app to foreground and start ringing
+                    NativeBridgeService.bringAppToForeground();
+                    NativeBridgeService.startRinging();
+
                     await NotificationService.notifyNewBooking(newRide);
                     
                     // Track that we notified for this ride
@@ -66,6 +71,48 @@ TaskManager.defineTask(BACKGROUND_RIDE_TASK, async ({ data, error }: any) => {
             }
         } catch (err) {
             console.error('Error in background ride polling:', err);
+        }
+    }
+});
+
+// ─── Headless Notification Task (FCM Background Wakeup) ─────────────────────
+export const BACKGROUND_NOTIFICATION_TASK = 'BACKGROUND_NOTIFICATION_TASK';
+
+TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error, executionInfo }: any) => {
+    if (error) {
+        console.error('Background notification task error:', error);
+        return;
+    }
+
+    if (data) {
+        console.log('Background FCM notification received:', data);
+        
+        try {
+            // In Expo Notifications, the data payload is passed inside notification.data or notification.request.content.data
+            const notificationData = data.notification?.request?.content?.data || data.notification?.data || {};
+
+            // Check if it's a new booking payload sent from the server
+            if (notificationData.type === 'NEW_BOOKING' && notificationData.rideId) {
+                // Ensure driver is online
+                const driverId = await SecureStore.getItemAsync(DRIVER_ID_KEY);
+                if (!driverId) return; // Driver logged out or not set
+
+                // 1. Force the app to the foreground
+                NativeBridgeService.bringAppToForeground();
+
+                // 2. Play the loud persistent ringtone
+                NativeBridgeService.startRinging();
+
+                // 3. We optionally trigger a local notification to ensure the notification tray updates
+                await NotificationService.notifyNewBooking({
+                    id: notificationData.rideId,
+                    service_type: notificationData.service_type || 'taxi',
+                    fare: notificationData.fare || 'Unknown',
+                    distance_km: notificationData.distance_km || 'Unknown',
+                });
+            }
+        } catch (err) {
+            console.error('Failed to handle background FCM notification:', err);
         }
     }
 });

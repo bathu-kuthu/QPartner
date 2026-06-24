@@ -24,7 +24,8 @@ export class NotificationService {
         // 2. Set notification handler
         Notifications.setNotificationHandler({
             handleNotification: async () => ({
-                shouldShowAlert: true,
+                shouldShowBanner: true,
+                shouldShowList: true,
                 shouldPlaySound: true,
                 shouldSetBadge: true,
                 priority: Notifications.AndroidNotificationPriority.MAX,
@@ -42,7 +43,19 @@ export class NotificationService {
             ]);
         }
 
-        // 4. Schedule daily reminders
+        // 4. Register Background FCM Data Message Handler
+        if (Platform.OS === 'android') {
+            try {
+                // We use dynamic import to avoid circular dependency issues at boot
+                const { BACKGROUND_NOTIFICATION_TASK } = await import('./background-task');
+                await Notifications.registerTaskAsync(BACKGROUND_NOTIFICATION_TASK);
+                console.log('Registered Background Notification Task for FCM');
+            } catch (err) {
+                console.warn('Failed to register background notification task:', err);
+            }
+        }
+
+        // 5. Schedule daily reminders
         await this.scheduleDailyReminders();
     }
 

@@ -1,14 +1,7 @@
 import { supabase } from '@/config/supabase';
-import { Ride, DriverEarning } from '@/types';
+import { Ride, DriverEarning, Notification, Review, RideStop, SosAlert, DriverPlatformFee } from '@/types';
 
 // ─── Service type mapping ────────────────────────────────────────────────────
-// Rules:
-//   taxi + bike    → taxi_bike, bike_taxi        (+ log_bike if acceptBoth=true)
-//   taxi + auto    → taxi_auto only
-//   taxi + cab     → taxi_car only
-//   log  + bike    → log_bike                    (+ taxi_bike, bike_taxi if acceptBoth=true)
-//   log  + mini_truck→ log_mini_truck only
-//   log  + truck   → log_truck only
 export function getServiceTypesForDriver(
     category: 'taxi' | 'logistics',
     vehicleType: string,
@@ -34,7 +27,7 @@ export function getServiceTypesForDriver(
 }
 
 // ─── Distance helper (Haversine, km) ────────────────────────────────────────
-function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
     const R = 6371;
     const dLat = ((lat2 - lat1) * Math.PI) / 180;
     const dLng = ((lng2 - lng1) * Math.PI) / 180;
@@ -45,6 +38,10 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
         Math.sin(dLng / 2) ** 2;
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
+
+// ─── Rides SELECT columns ────────────────────────────────────────────────────
+const RIDE_COLUMNS = 'id, user_id, service_type, pickup_location, drop_location, pickup_address, drop_address, distance_km, fare, base_fare, distance_fare, waiting_charge, status, driver_id, details, is_reviewed, cancel_reason, sender_phone, receiver_phone, is_multi_stop, stop_count, created_at, updated_at';
+const RIDE_COLUMNS_WITH_USER = `${RIDE_COLUMNS}, user:users!user_id(phone, name)`;
 
 export class DriverService {
     // ── Fetch available rides, filtered & sorted by proximity ────────────────
@@ -58,7 +55,7 @@ export class DriverService {
 
             const { data, error } = await supabase
                 .from('rides')
-                .select('*')
+                .select(RIDE_COLUMNS)
                 .eq('status', 'pending')
                 .is('driver_id', null)
                 .in('service_type', serviceTypes)
@@ -73,8 +70,7 @@ export class DriverService {
 
             const rawRides = (data ?? []) as Ride[];
 
-            // Filter for rides within 3km of the driver's current position
-            if (driverLat == null || driverLng == null) return []; // Cannot satisfy distance check
+            if (driverLat == null || driverLng == null) return [];
             
             const rides = rawRides.filter((ride) => {
                 const dist = haversineKm(
@@ -82,21 +78,12 @@ export class DriverService {
                     ride.pickup_location?.latitude ?? 0,
                     ride.pickup_location?.longitude ?? 0
                 );
-                return dist < 3.0; // Distance < 3 km
+                return dist < 3.0;
             });
 
-            // Sort nearest pickup first
             rides.sort((a, b) => {
-                const dA = haversineKm(
-                    driverLat, driverLng,
-                    a.pickup_location?.latitude ?? 0,
-                    a.pickup_location?.longitude ?? 0
-                );
-                const dB = haversineKm(
-                    driverLat, driverLng,
-                    b.pickup_location?.latitude ?? 0,
-                    b.pickup_location?.longitude ?? 0
-                );
+                const dA = haversineKm(driverLat, driverLng, a.pickup_location?.latitude ?? 0, a.pickup_location?.longitude ?? 0);
+                const dB = haversineKm(driverLat, driverLng, b.pickup_location?.latitude ?? 0, b.pickup_location?.longitude ?? 0);
                 return dA - dB;
             });
 
@@ -107,32 +94,16 @@ export class DriverService {
         }
     }
 
-    // ── Accept a ride (atomic) ───────────────────────────────────────────────
+    // ── Accept a ride (atomic via RPC) ───────────────────────────────────────
     static async acceptRide(rideId: string, driverId: string): Promise<Ride> {
-        const { data: existingRide, error: checkError } = await supabase
-            .from('rides')
-            .select('id')
-            .eq('driver_id', driverId)
-            .in('status', ['accepted', 'picked_up', 'on_ride'])
-            .maybeSingle();
-
-        if (checkError?.message?.includes('Failed to fetch')) throw new Error('NETWORK_ERROR');
-        if (existingRide) throw new Error('You already have an active ride');
-
         const { data, error } = await supabase
-            .from('rides')
-            .update({ driver_id: driverId, status: 'accepted', updated_at: new Date().toISOString() })
-            .eq('id', rideId)
-            .eq('status', 'pending')
-            .is('driver_id', null)
-            .select('*, user:users!user_id(phone, name)')
-            .single();
+            .rpc('accept_ride', { p_ride_id: rideId, p_driver_id: driverId });
 
         if (error) {
             if (error.message?.includes('Failed to fetch') || error.message?.includes('network')) {
                 throw new Error('NETWORK_ERROR');
             }
-            throw new Error('Ride no longer available');
+            throw new Error(error.message || 'Ride no longer available');
         }
         if (!data) throw new Error('Ride no longer available');
         return data as Ride;
@@ -143,14 +114,20 @@ export class DriverService {
         try {
             const { data, error } = await supabase
                 .from('rides')
-                .select('*, user:users!user_id(phone, name)')
+                .select(RIDE_COLUMNS_WITH_USER)
                 .eq('driver_id', driverId)
                 .in('status', ['accepted', 'picked_up', 'on_ride'])
                 .maybeSingle();
 
-            if (error) return null;
-            return (data as Ride) ?? null;
-        } catch {
+            if (error) {
+                if (error.message?.includes('Failed to fetch') || error.message?.includes('network')) {
+                    throw new Error('NETWORK_ERROR');
+                }
+                return null;
+            }
+            return (data as unknown as Ride) ?? null;
+        } catch (err: any) {
+            if (err.message === 'NETWORK_ERROR') throw err;
             return null;
         }
     }
@@ -158,11 +135,15 @@ export class DriverService {
     // ── Update ride status ───────────────────────────────────────────────────
     static async updateRideStatus(
         rideId: string,
-        status: 'picked_up' | 'on_ride' | 'completed' | 'cancelled'
+        status: 'picked_up' | 'on_ride' | 'completed' | 'cancelled',
+        cancelReason?: string
     ): Promise<void> {
+        const update: any = { status, updated_at: new Date().toISOString() };
+        if (cancelReason) update.cancel_reason = cancelReason;
+
         const { error } = await supabase
             .from('rides')
-            .update({ status, updated_at: new Date().toISOString() })
+            .update(update)
             .eq('id', rideId);
 
         if (error) {
@@ -173,26 +154,32 @@ export class DriverService {
         }
 
         if (status === 'completed') {
-            const { data: ride } = await supabase
+            const { data: ride, error: rideError } = await supabase
                 .from('rides')
                 .select('fare, driver_id')
                 .eq('id', rideId)
                 .single();
 
+            if (rideError) {
+                throw new Error(rideError.message || 'Failed to fetch ride details for completion');
+            }
+
             if (ride?.driver_id) {
                 const driverAmount = Math.round(ride.fare * 0.8 * 100) / 100;
-                await supabase.from('driver_earnings').insert({
-                    driver_id: ride.driver_id,
-                    ride_id: rideId,
-                    amount: driverAmount,
+                const { error: txError } = await supabase.rpc('complete_driver_ride', {
+                    p_ride_id: rideId,
+                    p_driver_id: ride.driver_id,
+                    p_earnings_amount: driverAmount,
                 });
-                await supabase.rpc('increment_driver_rides', { driver_id: ride.driver_id });
+
+                if (txError) {
+                    throw new Error(txError.message || 'Failed to complete ride earnings and stats');
+                }
             }
         }
     }
 
     // ── Realtime: pending rides ──────────────────────────────────────────────
-    // FIX: Use timestamp in channel name — prevents "cannot add callbacks after subscribe()" error
     static subscribeToPendingRides(
         callback: (rides: Ride[]) => void,
         serviceTypes: string[],
@@ -218,7 +205,6 @@ export class DriverService {
     }
 
     // ── Realtime: specific ride ──────────────────────────────────────────────
-    // FIX: timestamp suffix prevents duplicate-channel crash from StrictMode double-mount
     static subscribeToRide(rideId: string, callback: (ride: Ride) => void) {
         const channelName = `ride_${rideId}_${Date.now()}`;
         return supabase
@@ -226,13 +212,13 @@ export class DriverService {
             .on(
                 'postgres_changes',
                 { event: 'UPDATE', schema: 'public', table: 'rides', filter: `id=eq.${rideId}` },
-                async (payload) => {
+                async () => {
                     const { data } = await supabase
                         .from('rides')
-                        .select('*, user:users!user_id(phone, name)')
+                        .select(RIDE_COLUMNS_WITH_USER)
                         .eq('id', rideId)
                         .single();
-                    if (data) callback(data as Ride);
+                    if (data) callback(data as unknown as Ride);
                 }
             )
             .subscribe();
@@ -268,7 +254,7 @@ export class DriverService {
         try {
             const { data, error } = await supabase
                 .from('rides')
-                .select('*')
+                .select(RIDE_COLUMNS)
                 .eq('driver_id', driverId)
                 .in('status', ['completed', 'cancelled'])
                 .order('created_at', { ascending: false });
@@ -290,5 +276,109 @@ export class DriverService {
             update.current_lng = lng;
         }
         await supabase.from('users').update(update).eq('id', driverId);
+    }
+
+    // ── Notifications ────────────────────────────────────────────────────────
+    static async getNotifications(driverId: string): Promise<Notification[]> {
+        try {
+            const { data } = await supabase
+                .from('notifications')
+                .select('*')
+                .eq('user_id', driverId)
+                .order('created_at', { ascending: false })
+                .limit(50);
+            return (data ?? []) as Notification[];
+        } catch { return []; }
+    }
+
+    static async markNotificationRead(notificationId: string): Promise<void> {
+        await supabase
+            .from('notifications')
+            .update({ is_read: true })
+            .eq('id', notificationId);
+    }
+
+    static async markAllNotificationsRead(driverId: string): Promise<void> {
+        await supabase
+            .from('notifications')
+            .update({ is_read: true })
+            .eq('user_id', driverId)
+            .eq('is_read', false);
+    }
+
+    static subscribeToNotifications(driverId: string, callback: (n: Notification) => void) {
+        return supabase
+            .channel(`notifications_${driverId}_${Date.now()}`)
+            .on(
+                'postgres_changes',
+                { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${driverId}` },
+                (payload) => callback(payload.new as Notification)
+            )
+            .subscribe();
+    }
+
+    // ── Reviews ──────────────────────────────────────────────────────────────
+    static async getMyReviews(driverId: string): Promise<Review[]> {
+        try {
+            const { data } = await supabase
+                .from('reviews')
+                .select('*')
+                .eq('driver_id', driverId)
+                .eq('review_target', 'driver')
+                .order('created_at', { ascending: false });
+            return (data ?? []) as Review[];
+        } catch { return []; }
+    }
+
+    // ── Ride stops (multi-stop rides) ────────────────────────────────────────
+    static async getRideStops(rideId: string): Promise<RideStop[]> {
+        try {
+            const { data } = await supabase
+                .from('ride_stops')
+                .select('*')
+                .eq('ride_id', rideId)
+                .order('seq', { ascending: true });
+            return (data ?? []) as RideStop[];
+        } catch { return []; }
+    }
+
+    static async updateStopStatus(
+        stopId: string,
+        status: 'arrived' | 'completed' | 'skipped'
+    ): Promise<void> {
+        const update: any = { status, updated_at: new Date().toISOString() };
+        if (status === 'arrived') update.arrived_at = new Date().toISOString();
+        if (status === 'completed') update.completed_at = new Date().toISOString();
+        await supabase.from('ride_stops').update(update).eq('id', stopId);
+    }
+
+    // ── SOS Alert ────────────────────────────────────────────────────────────
+    static async triggerSOS(
+        driverId: string,
+        rideId?: string,
+        lat?: number,
+        lng?: number,
+        message?: string
+    ): Promise<void> {
+        await supabase.from('sos_alerts').insert({
+            triggered_by: driverId,
+            ride_id: rideId ?? null,
+            lat: lat ?? null,
+            lng: lng ?? null,
+            message: message ?? 'SOS triggered by driver',
+            status: 'active',
+        });
+    }
+
+    // ── Platform Fees ────────────────────────────────────────────────────────
+    static async getMyPlatformFees(driverId: string): Promise<DriverPlatformFee[]> {
+        try {
+            const { data } = await supabase
+                .from('driver_platform_fees')
+                .select('*')
+                .eq('user_id', driverId)
+                .order('payment_date', { ascending: false });
+            return (data ?? []) as DriverPlatformFee[];
+        } catch { return []; }
     }
 }

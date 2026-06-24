@@ -1,23 +1,32 @@
 {
   "expo": {
-    "name": "Quickora Driver",
+    "name": "QPartner",
     "slug": "quickora-driver",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "quickoradriver",
+    "scheme": "qpartner",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.quickora.driver"
+      "bundleIdentifier": "com.quickora.qpartner"
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundColor": "#1565C0"
       },
-      "package": "com.quickora.driver"
+      "package": "com.quickora.qpartner",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION",
+        "android.permission.WAKE_LOCK"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -39,19 +48,26 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Quickora Driver to access your photos to upload documents."
+          "photosPermission": "Allow QPartner to access your photos to upload documents."
         }
       ],
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow Quickora Driver to use your location to show your position to customers.",
+          "locationAlwaysAndWhenInUsePermission": "Allow QPartner to use your location to show your position to customers.",
           "isAndroidBackgroundLocationEnabled": true
         }
       ]
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "3fed2b24-2b10-4397-ada7-2b9b703cd28b"
+      }
+    },
+    "owner": "bathma"
   }
 }

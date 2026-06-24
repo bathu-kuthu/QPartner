@@ -2,8 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
     View, Text, TouchableOpacity, StyleSheet, Alert,
     Linking, ActivityIndicator, BackHandler, AppState, AppStateStatus,
+    TextInput, ScrollView
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
+import { supabase } from '@/config/supabase';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { colors, Fonts } from '@/constants/colors';
@@ -13,6 +15,7 @@ import { useAuth } from '@/contexts/auth-context';
 import { Ride } from '@/types';
 import { useTranslation } from 'react-i18next';
 import { NotificationService } from '@/services/notification.service';
+
 
 export default function ActiveRideScreen() {
     const insets = useSafeAreaInsets();
@@ -34,6 +37,12 @@ export default function ActiveRideScreen() {
         { key: 'picked_up', label: t('activeRide.steps.picked_up'), icon: 'user-check', action: t('activeRide.actions.start_ride'), nextStatus: 'on_ride' as const },
         { key: 'on_ride', label: t('activeRide.steps.on_ride'), icon: 'truck', action: t('activeRide.actions.complete_ride'), nextStatus: 'completed' as const },
     ];
+
+    // ── OTP state ─────────────────────────────────────────────────────────
+    const [otpDigits, setOtpDigits] = useState(['', '', '', '']);
+    const [otpError, setOtpError] = useState<string | null>(null);
+    const [verifyingOTP, setVerifyingOTP] = useState(false);
+    const otpInputRefs = [useRef<any>(null), useRef<any>(null), useRef<any>(null), useRef<any>(null)];
 
     // ── Block hardware back — driver cannot leave mid-ride ─────────────────
     useEffect(() => {
@@ -155,7 +164,7 @@ export default function ActiveRideScreen() {
                 router.replace('/(tabs)/bookings');
             } else {
                 setRide((prev) => prev ? { ...prev, status: newStatus } : null);
-                
+
                 // Trigger Milestone Notification ─────────
                 let title = '';
                 let body = '';
@@ -180,6 +189,50 @@ export default function ActiveRideScreen() {
         }
     };
 
+    // ── OTP Verification ───────────────────────────────────────────────────
+    const verifyOTPDirectly = async (enteredOTP: string) => {
+        if (!ride?.id) return;
+        setVerifyingOTP(true);
+        setOtpError(null);
+        try {
+            const { data: matched, error } = await supabase
+                .rpc('verify_ride_otp', { p_ride_id: ride.id, p_entered_otp: enteredOTP });
+
+            if (error) throw new Error('Could not verify OTP. Please try again.');
+
+            if (!matched) {
+                setOtpError('Incorrect OTP.');
+                setOtpDigits(['', '', '', '']);
+                otpInputRefs[0].current?.focus();
+                return;
+            }
+
+            // OTP is correct! Automatically start ride.
+            await doUpdate('on_ride');
+        } catch (e: any) {
+            setOtpError(e.message);
+        } finally {
+            setVerifyingOTP(false);
+        }
+    };
+
+    const handleOtpChange = (value: string, index: number) => {
+        setOtpError(null);
+        const digit = value.replace(/[^0-9]/g, '').slice(-1);
+        const next = [...otpDigits];
+        next[index] = digit;
+        setOtpDigits(next);
+
+        if (digit && index < 3) {
+            otpInputRefs[index + 1].current?.focus();
+        }
+
+        // Auto-verify if all 4 digits are present
+        if (digit && index === 3 && next.every(d => d !== '')) {
+            verifyOTPDirectly(next.join(''));
+        }
+    };
+
     // ── Cancel ride ────────────────────────────────────────────────────────
     const handleCancel = () => {
         Alert.alert(
@@ -190,19 +243,53 @@ export default function ActiveRideScreen() {
                 {
                     text: t('activeRide.cancelRide'),
                     style: 'destructive',
+                    onPress: () => {
+                        Alert.alert(
+                            'Cancel Reason',
+                            'Why are you cancelling?',
+                            [
+                                { text: 'Passenger is not at pickup', onPress: () => doCancelWithReason('Passenger is not at pickup location') },
+                                { text: 'Vehicle issue', onPress: () => doCancelWithReason('Vehicle broke down') },
+                                { text: 'Passenger requested', onPress: () => doCancelWithReason('Passenger requested to cancel') },
+                                { text: 'Other', onPress: () => doCancelWithReason('Other') },
+                                { text: t('common.no'), style: 'cancel' },
+                            ]
+                        );
+                    },
+                },
+            ]
+        );
+    };
+
+    const doCancelWithReason = async (reason: string) => {
+        if (!ride?.id) return;
+        try {
+            await DriverService.updateRideStatus(ride.id, 'cancelled', reason);
+            NotificationService.notifyRideStatus('Ride Cancelled ❌', 'The ride has been cancelled successfully.');
+            router.replace('/(tabs)/bookings');
+        } catch (e: any) {
+            if (e.message === 'NETWORK_ERROR') {
+                Alert.alert('No Internet', 'Could not cancel. Check your connection.');
+            } else {
+                Alert.alert('Error', 'Failed to cancel ride.');
+            }
+        }
+    };
+
+    // ── SOS ───────────────────────────────────────────────────────────────────
+    const handleSOS = () => {
+        Alert.alert(
+            '🆘 Emergency SOS',
+            'This will alert Quickora support immediately. Proceed?',
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Send SOS',
+                    style: 'destructive',
                     onPress: async () => {
-                        if (!ride?.id) return;
-                        try {
-                            await DriverService.updateRideStatus(ride.id, 'cancelled');
-                            NotificationService.notifyRideStatus('Ride Cancelled ❌', 'The ride has been cancelled successfully.');
-                            router.replace('/(tabs)/bookings');
-                        } catch (e: any) {
-                            if (e.message === 'NETWORK_ERROR') {
-                                Alert.alert('No Internet', 'Could not cancel. Check your connection.');
-                            } else {
-                                Alert.alert('Error', 'Failed to cancel ride.');
-                            }
-                        }
+                        if (!driver?.id) return;
+                        await DriverService.triggerSOS(driver.id, ride?.id);
+                        Alert.alert('SOS Sent', 'Support has been alerted. Stay safe.');
                     },
                 },
             ]
@@ -218,9 +305,9 @@ export default function ActiveRideScreen() {
 
     // ── Call customer ──────────────────────────────────────────────────────
     const handleCall = () => {
-        const phone = ride?.user?.phone;
+        const phone = "9715749855"; // Customer care number replacing actual user phone
         if (phone) {
-            Linking.openURL(`tel:${phone}`).catch(() => 
+            Linking.openURL(`tel:${phone}`).catch(() =>
                 Alert.alert('Error', 'Unable to open phone dialer')
             );
         } else {
@@ -258,7 +345,7 @@ export default function ActiveRideScreen() {
     const stepIdx = STATUS_STEPS.findIndex((s) => s.key === ride.status);
 
     return (
-        <View style={[styles.container, { paddingTop: insets.top }]}>
+        <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
             {/* Header — intentionally no back button */}
             <View style={styles.header}>
                 <View>
@@ -282,138 +369,246 @@ export default function ActiveRideScreen() {
                 </View>
             )}
 
-            {/* Progress steps */}
-            <View style={styles.progressBar}>
-                {STATUS_STEPS.map((s, i) => (
-                    <React.Fragment key={s.key}>
-                        <View style={styles.progressStep}>
-                            <View style={[
-                                styles.progressDot,
-                                i <= stepIdx && styles.progressDotActive,
-                                i < stepIdx && styles.progressDotDone,
-                            ]}>
-                                {i < stepIdx ? (
-                                    <Feather name="check" size={10} color={colors.white} />
-                                ) : (
-                                    <View style={i === stepIdx ? styles.progressDotCenter : undefined} />
-                                )}
+            <ScrollView
+                style={{ flex: 1 }}
+                contentContainerStyle={{ paddingBottom: 16 }}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+            >
+                {/* Progress steps */}
+                <View style={styles.progressBar}>
+                    {STATUS_STEPS.map((s, i) => (
+                        <React.Fragment key={s.key}>
+                            <View style={styles.progressStep}>
+                                <View style={[
+                                    styles.progressDot,
+                                    i <= stepIdx && styles.progressDotActive,
+                                    i < stepIdx && styles.progressDotDone,
+                                ]}>
+                                    {i < stepIdx ? (
+                                        <Feather name="check" size={10} color={colors.white} />
+                                    ) : (
+                                        <View style={i === stepIdx ? styles.progressDotCenter : undefined} />
+                                    )}
+                                </View>
+                                <Text style={[styles.progressLabel, i <= stepIdx && styles.progressLabelActive]}>
+                                    {s.label.split(' ')[0]}
+                                </Text>
                             </View>
-                            <Text style={[styles.progressLabel, i <= stepIdx && styles.progressLabelActive]}>
-                                {s.label.split(' ')[0]}
-                            </Text>
-                        </View>
-                        {i < STATUS_STEPS.length - 1 && (
-                            <View style={[styles.progressLine, i < stepIdx && styles.progressLineDone]} />
-                        )}
-                    </React.Fragment>
-                ))}
-            </View>
-
-            {/* Status card */}
-            <View style={styles.statusCard}>
-                <View style={styles.statusIconBox}>
-                    <Feather name={(step?.icon ?? 'truck') as any} size={28} color={colors.primary} />
+                            {i < STATUS_STEPS.length - 1 && (
+                                <View style={[styles.progressLine, i < stepIdx && styles.progressLineDone]} />
+                            )}
+                        </React.Fragment>
+                    ))}
                 </View>
-                <Text style={styles.statusTitle}>{step?.label}</Text>
-                <Text style={styles.distanceText}>{t('activeRide.tripDistance', { distance: ride.distance_km })}</Text>
-            </View>
 
-            {/* Route */}
-            <View style={styles.routeCard}>
-                <TouchableOpacity
-                    style={styles.locationRow}
-                    onPress={() => openMaps(ride.pickup_location.latitude, ride.pickup_location.longitude)}
-                    activeOpacity={0.7}
-                >
-                    <View style={[styles.locationDot, { backgroundColor: colors.success }]} />
-                    <View style={styles.locationInfo}>
-                        <Text style={styles.locationLabel}>{t('activeRide.pickup')}</Text>
-                        <Text style={styles.locationAddress} numberOfLines={2}>{ride.pickup_address}</Text>
+                {/* Status card */}
+                <View style={styles.statusCard}>
+                    <View style={styles.statusIconBox}>
+                        <Feather name={(step?.icon ?? 'truck') as any} size={28} color={colors.primary} />
                     </View>
-                    <Feather name="navigation" size={18} color={colors.primary} />
-                </TouchableOpacity>
-
-                <View style={styles.routeConnector}>
-                    <View style={styles.routeConnectorLine} />
+                    <Text style={styles.statusTitle}>{step?.label}</Text>
+                    <Text style={styles.distanceText}>{t('activeRide.tripDistance', { distance: ride.distance_km })}</Text>
                 </View>
 
-                <TouchableOpacity
-                    style={styles.locationRow}
-                    onPress={() => openMaps(ride.drop_location.latitude, ride.drop_location.longitude)}
-                    activeOpacity={0.7}
-                >
-                    <View style={[styles.locationDot, { backgroundColor: colors.error }]} />
-                    <View style={styles.locationInfo}>
-                        <Text style={styles.locationLabel}>{t('activeRide.dropoff')}</Text>
-                        <Text style={styles.locationAddress} numberOfLines={2}>{ride.drop_address}</Text>
-                    </View>
-                    <Feather name="navigation" size={18} color={colors.primary} />
-                </TouchableOpacity>
-            </View>
-
-            {ride.details && (
-                <View style={styles.detailsCard}>
-                    <Feather name="info" size={14} color={colors.primary} />
-                    <Text style={styles.detailsText}>{ride.details}</Text>
-                </View>
-            )}
-
-            {/* Actions */}
-            <View style={styles.actions}>
-                {step && (
+                {/* Route */}
+                <View style={styles.routeCard}>
                     <TouchableOpacity
-                        style={[styles.actionBtn, updating && styles.actionBtnLoading]}
-                        onPress={handleStatusUpdate}
-                        disabled={updating}
-                        activeOpacity={0.85}
+                        style={styles.locationRow}
+                        onPress={() => openMaps(ride.pickup_location.latitude, ride.pickup_location.longitude)}
+                        activeOpacity={0.7}
                     >
-                        {updating ? (
-                            <ActivityIndicator color={colors.white} />
-                        ) : (
-                            <>
-                                <Feather name="check-circle" size={20} color={colors.white} />
-                                <Text style={styles.actionBtnText}>{step.action}</Text>
-                            </>
-                        )}
+                        <View style={[styles.locationDot, { backgroundColor: colors.success }]} />
+                        <View style={styles.locationInfo}>
+                            <Text style={styles.locationLabel}>{t('activeRide.pickup')}</Text>
+                            <Text style={styles.locationAddress} numberOfLines={2}>{ride.pickup_address}</Text>
+                        </View>
+                        <Feather name="navigation" size={18} color={colors.primary} />
                     </TouchableOpacity>
+
+                    {ride.status !== 'accepted' ? (
+                        <>
+                            <View style={styles.routeConnector}>
+                                <View style={styles.routeConnectorLine} />
+                            </View>
+
+                            <TouchableOpacity
+                                style={styles.locationRow}
+                                onPress={() => openMaps(ride.drop_location.latitude, ride.drop_location.longitude)}
+                                activeOpacity={0.7}
+                            >
+                                <View style={[styles.locationDot, { backgroundColor: colors.error }]} />
+                                <View style={styles.locationInfo}>
+                                    <Text style={styles.locationLabel}>{t('activeRide.dropoff')}</Text>
+                                    <Text style={styles.locationAddress} numberOfLines={2}>{ride.drop_address}</Text>
+                                </View>
+                                <Feather name="navigation" size={18} color={colors.primary} />
+                            </TouchableOpacity>
+                        </>
+                    ) : (
+                        <View style={styles.dropoffHidden}>
+                            <Feather name="lock" size={14} color={colors.textMuted} />
+                            <Text style={styles.dropoffHiddenText}>Drop-off will be revealed after pickup</Text>
+                        </View>
+                    )}
+                </View>
+
+                {/* Fare breakdown */}
+                {(ride.base_fare != null || ride.waiting_charge != null) && (
+                    <View style={styles.fareBreakdown}>
+                        <Text style={styles.fareBreakdownTitle}>Fare Breakdown</Text>
+                        {ride.base_fare != null && (
+                            <View style={styles.fareRow}>
+                                <Text style={styles.fareKey}>Base Fare</Text>
+                                <Text style={styles.fareVal}>₹{ride.base_fare}</Text>
+                            </View>
+                        )}
+                        {ride.distance_fare != null && (
+                            <View style={styles.fareRow}>
+                                <Text style={styles.fareKey}>Distance ({ride.distance_km} km)</Text>
+                                <Text style={styles.fareVal}>₹{ride.distance_fare}</Text>
+                            </View>
+                        )}
+                        {(ride.waiting_charge ?? 0) > 0 && (
+                            <View style={styles.fareRow}>
+                                <Text style={styles.fareKey}>Waiting</Text>
+                                <Text style={[styles.fareVal, { color: colors.warning }]}>₹{ride.waiting_charge}</Text>
+                            </View>
+                        )}
+                        <View style={[styles.fareRow, { borderTopWidth: 1, borderTopColor: colors.border, marginTop: 6, paddingTop: 6 }]}>
+                            <Text style={[styles.fareKey, { fontFamily: Fonts.bold, color: colors.text }]}>Total</Text>
+                            <Text style={[styles.fareVal, { fontFamily: Fonts.bold, color: colors.primary }]}>₹{ride.fare}</Text>
+                        </View>
+                    </View>
                 )}
 
-                {/* Secondary Actions Row: Chat, Cancel, Call */}
-                <View style={styles.secondaryActionRow}>
-                    <TouchableOpacity style={styles.smallActionBtn} onPress={handleOpenChat}>
-                        <View style={styles.fabIconWrapper}>
-                            <Feather name="message-circle" size={20} color={colors.primary} />
-                            {unreadCount > 0 && (
-                                <View style={styles.smallBadge}>
-                                    <Text style={styles.smallBadgeText}>{unreadCount > 9 ? '9+' : unreadCount}</Text>
-                                </View>
-                            )}
-                        </View>
-                        <Text style={styles.smallActionText}>Chat</Text>
-                    </TouchableOpacity>
+                {/* Multi-stop indicator */}
+                {ride.is_multi_stop && (
+                    <View style={styles.multiStopBadge}>
+                        <Feather name="layers" size={14} color={colors.primary} />
+                        <Text style={styles.multiStopText}>Multi-stop ride · {ride.stop_count ?? '?'} stops</Text>
+                    </View>
+                )}
 
-                    {ride.status === 'accepted' && (
-                        <TouchableOpacity style={[styles.smallActionBtn, styles.cancelAction]} onPress={handleCancel}>
-                            <Feather name="x-circle" size={20} color={colors.error} />
-                            <Text style={[styles.smallActionText, { color: colors.error }]}>Cancel</Text>
-                        </TouchableOpacity>
+                {/* Parcel contact info */}
+                {(ride.sender_phone || ride.receiver_phone) && (
+                    <View style={styles.parcelCard}>
+                        <Text style={styles.parcelTitle}>📦 Parcel Contacts</Text>
+                        {ride.sender_phone && (
+                            <TouchableOpacity style={styles.parcelRow} onPress={() => Linking.openURL(`tel:9715749855`)}>
+                                <Feather name="user" size={14} color={colors.textMuted} />
+                                <Text style={styles.parcelLabel}>Sender</Text>
+                                <Text style={styles.parcelPhone}>9715749855</Text>
+                                <Feather name="phone" size={14} color={colors.success} />
+                            </TouchableOpacity>
+                        )}
+                        {ride.receiver_phone && (
+                            <TouchableOpacity style={styles.parcelRow} onPress={() => Linking.openURL(`tel:9715749855`)}>
+                                <Feather name="user-check" size={14} color={colors.textMuted} />
+                                <Text style={styles.parcelLabel}>Receiver</Text>
+                                <Text style={styles.parcelPhone}>9715749855</Text>
+                                <Feather name="phone" size={14} color={colors.success} />
+                            </TouchableOpacity>
+                        )}
+                    </View>
+                )}
+
+                {/* Actions */}
+                <View style={styles.actions}>
+                    {ride.status === 'picked_up' ? (
+                        <View style={styles.otpContainer}>
+                            <Text style={styles.otpTitle}>Enter Passenger OTP</Text>
+                            <Text style={styles.otpSubtitle}>Ask the passenger for the 4-digit code to start the ride</Text>
+                            <View style={styles.otpInputContainer}>
+                                {otpDigits.map((digit, index) => (
+                                    <TextInput
+                                        key={index}
+                                        ref={otpInputRefs[index]}
+                                        style={[styles.otpInput, otpError ? styles.otpInputError : null]}
+                                        keyboardType="number-pad"
+                                        maxLength={1}
+                                        value={digit}
+                                        onChangeText={(val) => handleOtpChange(val, index)}
+                                        onKeyPress={({ nativeEvent }) => {
+                                            if (nativeEvent.key === 'Backspace' && !digit && index > 0) {
+                                                otpInputRefs[index - 1].current?.focus();
+                                                const next = [...otpDigits];
+                                                next[index - 1] = '';
+                                                setOtpDigits(next);
+                                                setOtpError(null);
+                                            }
+                                        }}
+                                        editable={!verifyingOTP}
+                                    />
+                                ))}
+                            </View>
+                            {otpError && <Text style={styles.otpErrorText}>{otpError}</Text>}
+                            {verifyingOTP && <ActivityIndicator color={colors.primary} style={{ marginTop: 10 }} />}
+                        </View>
+                    ) : (
+                        step && (
+                            <TouchableOpacity
+                                style={[styles.actionBtn, updating && styles.actionBtnLoading]}
+                                onPress={handleStatusUpdate}
+                                disabled={updating}
+                                activeOpacity={0.85}
+                            >
+                                {updating ? (
+                                    <ActivityIndicator color={colors.white} />
+                                ) : (
+                                    <>
+                                        <Feather name="check-circle" size={20} color={colors.white} />
+                                        <Text style={styles.actionBtnText}>{step.action}</Text>
+                                    </>
+                                )}
+                            </TouchableOpacity>
+                        )
                     )}
 
-                    <TouchableOpacity style={styles.smallActionBtn} onPress={handleCall}>
-                        <Feather name="phone" size={20} color={colors.success} />
-                        <Text style={[styles.smallActionText, { color: colors.success }]}>Call</Text>
-                    </TouchableOpacity>
-                </View>
-            </View>
+                    {/* Secondary Actions Row: Chat, Cancel, Call */}
+                    <View style={styles.secondaryActionRow}>
+                        <TouchableOpacity style={styles.smallActionBtn} onPress={handleOpenChat}>
+                            <View style={styles.fabIconWrapper}>
+                                <Feather name="message-circle" size={20} color={colors.primary} />
+                                {unreadCount > 0 && (
+                                    <View style={styles.smallBadge}>
+                                        <Text style={styles.smallBadgeText}>{unreadCount > 9 ? '9+' : unreadCount}</Text>
+                                    </View>
+                                )}
+                            </View>
+                            <Text style={styles.smallActionText}>Chat</Text>
+                        </TouchableOpacity>
 
-            {/* Lock note */}
-            <View style={styles.lockNote}>
-                <Feather name="lock" size={12} color={colors.textMuted} />
-                <Text style={styles.lockText}>{t('activeRide.lockNote')}</Text>
-            </View>
+                        {ride.status === 'accepted' && (
+                            <TouchableOpacity style={[styles.smallActionBtn, styles.cancelAction]} onPress={handleCancel}>
+                                <Feather name="x-circle" size={20} color={colors.error} />
+                                <Text style={[styles.smallActionText, { color: colors.error }]}>Cancel</Text>
+                            </TouchableOpacity>
+                        )}
+
+                        <TouchableOpacity style={styles.smallActionBtn} onPress={handleCall}>
+                            <Feather name="phone" size={20} color={colors.success} />
+                            <Text style={[styles.smallActionText, { color: colors.success }]}>Call</Text>
+                        </TouchableOpacity>
+
+                        {/* SOS Button */}
+                        <TouchableOpacity style={[styles.smallActionBtn, { borderColor: colors.error + '60' }]} onPress={handleSOS}>
+                            <Feather name="alert-triangle" size={20} color={colors.error} />
+                            <Text style={[styles.smallActionText, { color: colors.error }]}>SOS</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+
+                {/* Lock note */}
+                <View style={styles.lockNote}>
+                    <Feather name="lock" size={12} color={colors.textMuted} />
+                    <Text style={styles.lockText}>{t('activeRide.lockNote')}</Text>
+                </View>
+            </ScrollView>
         </View>
     );
 }
+
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
@@ -489,6 +684,11 @@ const styles = StyleSheet.create({
     locationAddress: { fontFamily: Fonts.medium, fontSize: 14, color: colors.text, lineHeight: 20 },
     routeConnector: { paddingLeft: 5, paddingVertical: 4 },
     routeConnectorLine: { width: 1.5, height: 16, backgroundColor: colors.border },
+    dropoffHidden: {
+        flexDirection: 'row', alignItems: 'center', gap: 8,
+        marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border,
+    },
+    dropoffHiddenText: { fontFamily: Fonts.regular, fontSize: 13, color: colors.textMuted, fontStyle: 'italic' },
 
     detailsCard: {
         flexDirection: 'row', gap: 8, backgroundColor: colors.primaryLight,
@@ -560,4 +760,58 @@ const styles = StyleSheet.create({
         gap: 6, marginTop: 12,
     },
     lockText: { fontFamily: Fonts.regular, fontSize: 12, color: colors.textMuted },
+
+    // OTP Styles
+    otpContainer: {
+        backgroundColor: colors.surface,
+        borderRadius: 16,
+        padding: 20,
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: colors.border,
+        marginBottom: 8,
+    },
+    otpTitle: { fontFamily: Fonts.bold, fontSize: 18, color: colors.text, marginBottom: 4 },
+    otpSubtitle: { fontFamily: Fonts.regular, fontSize: 13, color: colors.textSecondary, textAlign: 'center', marginBottom: 16 },
+    otpInputContainer: { flexDirection: 'row', gap: 12, justifyContent: 'center' },
+    otpInput: {
+        width: 50, height: 60,
+        borderRadius: 12, borderWidth: 1.5, borderColor: colors.border,
+        backgroundColor: colors.background,
+        fontFamily: Fonts.bold, fontSize: 24, color: colors.text,
+        textAlign: 'center',
+    },
+    otpInputError: { borderColor: colors.error, color: colors.error },
+    otpErrorText: { fontFamily: Fonts.medium, fontSize: 13, color: colors.error, marginTop: 12 },
+
+    // Fare breakdown
+    fareBreakdown: {
+        backgroundColor: colors.surface, marginHorizontal: 16, marginTop: 10,
+        borderRadius: 14, padding: 14, borderWidth: 1, borderColor: colors.border,
+    },
+    fareBreakdownTitle: { fontFamily: Fonts.bold, fontSize: 13, color: colors.textMuted, marginBottom: 10, letterSpacing: 0.5, textTransform: 'uppercase' },
+    fareRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
+    fareKey: { fontFamily: Fonts.regular, fontSize: 13, color: colors.textSecondary },
+    fareVal: { fontFamily: Fonts.medium, fontSize: 13, color: colors.text },
+
+    // Multi-stop badge
+    multiStopBadge: {
+        flexDirection: 'row', alignItems: 'center', gap: 6,
+        backgroundColor: colors.primaryLight, marginHorizontal: 16, marginTop: 8,
+        borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8,
+    },
+    multiStopText: { fontFamily: Fonts.medium, fontSize: 13, color: colors.primary },
+
+    // Parcel contacts
+    parcelCard: {
+        backgroundColor: colors.surface, marginHorizontal: 16, marginTop: 10,
+        borderRadius: 14, padding: 14, borderWidth: 1, borderColor: colors.border,
+    },
+    parcelTitle: { fontFamily: Fonts.bold, fontSize: 13, color: colors.text, marginBottom: 10 },
+    parcelRow: {
+        flexDirection: 'row', alignItems: 'center', gap: 8,
+        paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.border,
+    },
+    parcelLabel: { fontFamily: Fonts.medium, fontSize: 13, color: colors.textSecondary, flex: 0, width: 60 },
+    parcelPhone: { flex: 1, fontFamily: Fonts.bold, fontSize: 14, color: colors.text },
 });

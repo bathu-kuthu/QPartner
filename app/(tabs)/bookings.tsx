@@ -14,6 +14,7 @@ import { DriverService, getServiceTypesForDriver } from '@/services/driver.servi
 import { useTranslation } from 'react-i18next';
 import { BACKGROUND_RIDE_TASK, setBackgroundTaskData } from '@/services/background-task';
 import { Ride } from '@/types';
+import { NativeBridgeService } from '@/services/native-bridge.service';
 
 const ACCEPT_BOTH_KEY = '@quickora_accept_both';
 
@@ -72,40 +73,57 @@ export default function BookingsScreen() {
     const toggleAcceptBoth = async (val: boolean) => {
         setAcceptBoth(val);
         await AsyncStorage.setItem(ACCEPT_BOTH_KEY, val ? 'true' : 'false');
-        // Update service types for background task if online
-        if (isOnline) {
-            const types = getServiceTypesForDriver(driver?.vehicle_category ?? 'taxi', driver?.vehicle_type ?? 'bike', val);
-            await AsyncStorage.setItem('@service_types', JSON.stringify(types));
+        if (driver?.id) {
+            const types = getServiceTypesForDriver(driver.vehicle_category ?? 'taxi', driver.vehicle_type ?? 'bike', val);
+            await setBackgroundTaskData(driver.id, types);
         }
     };
 
     // ── Location services ─────────────────────────────────────────────────
     useEffect(() => {
         (async () => {
-            const { status } = await Location.requestForegroundPermissionsAsync();
-            if (status !== 'granted') return;
-
-            // Get initial position
-            const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-            setDriverLat(pos.coords.latitude);
-            setDriverLng(pos.coords.longitude);
-
-            // Watch position
-            locationSubRef.current = await Location.watchPositionAsync(
-                { accuracy: Location.Accuracy.Balanced, distanceInterval: 50 },
-                (loc) => {
-                    setDriverLat(loc.coords.latitude);
-                    setDriverLng(loc.coords.longitude);
-                    // Update in DB if online (throttled by distanceInterval)
-                    if (driver?.id && isOnline) {
-                        DriverService.setOnlineStatus(
-                            driver.id, true,
-                            loc.coords.latitude,
-                            loc.coords.longitude
-                        );
-                    }
+            try {
+                const { status } = await Location.requestForegroundPermissionsAsync();
+                if (status !== 'granted') {
+                    console.warn('Foreground location permission not granted.');
+                    return;
                 }
-            );
+
+                // Get initial position — safely handle GPS unavailable
+                try {
+                    const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+                    setDriverLat(pos.coords.latitude);
+                    setDriverLng(pos.coords.longitude);
+                } catch (gpsErr) {
+                    // GPS not ready yet — try last known position as fallback
+                    try {
+                        const last = await Location.getLastKnownPositionAsync();
+                        if (last) {
+                            setDriverLat(last.coords.latitude);
+                            setDriverLng(last.coords.longitude);
+                        }
+                    } catch { /* silently skip */ }
+                }
+
+                // Watch position
+                locationSubRef.current = await Location.watchPositionAsync(
+                    { accuracy: Location.Accuracy.Balanced, distanceInterval: 50 },
+                    (loc) => {
+                        setDriverLat(loc.coords.latitude);
+                        setDriverLng(loc.coords.longitude);
+                        // Update in DB if online (throttled by distanceInterval)
+                        if (driver?.id && isOnline) {
+                            DriverService.setOnlineStatus(
+                                driver.id, true,
+                                loc.coords.latitude,
+                                loc.coords.longitude
+                            ).catch((e) => console.warn('DB location update failed:', e?.message));
+                        }
+                    }
+                );
+            } catch (err: any) {
+                console.warn('Location setup failed:', err?.message ?? err);
+            }
         })();
 
         return () => { locationSubRef.current?.remove?.(); };
@@ -136,26 +154,20 @@ export default function BookingsScreen() {
         // Unsubscribe old channel before creating new one
         channelRef.current?.unsubscribe?.();
         channelRef.current = DriverService.subscribeToPendingRides(
-            (rides) => { if (!activeRide) setAvailableRides(rides.slice(0, 1)); },
+            (rides) => {
+                try {
+                    if (!activeRide) setAvailableRides(rides.slice(0, 1));
+                } catch (e) {
+                    console.warn('Error updating available rides:', e);
+                }
+            },
             serviceTypes,
             driverLat,
             driverLng
         );
 
         return () => { channelRef.current?.unsubscribe?.(); };
-    }, [loadData]);
-
-    // Re-subscribe when acceptBoth changes (service types change)
-    useEffect(() => {
-        channelRef.current?.unsubscribe?.();
-        channelRef.current = DriverService.subscribeToPendingRides(
-            (rides) => { if (!activeRide) setAvailableRides(rides.slice(0, 1)); },
-            serviceTypes,
-            driverLat,
-            driverLng
-        );
-        return () => { channelRef.current?.unsubscribe?.(); };
-    }, [acceptBoth]);
+    }, [loadData, acceptBoth]);
 
     // Subscribe to active ride changes
     useEffect(() => {
@@ -187,38 +199,62 @@ export default function BookingsScreen() {
             );
             return;
         }
+        if (value && (driverLat == null || driverLng == null)) {
+            Alert.alert('Locating...', 'Please wait until a GPS location fix is obtained before going online.');
+            return;
+        }
+
+        if (value) {
+            const hasOverlayPermission = await NativeBridgeService.checkDrawOverAppsPermission();
+            if (!hasOverlayPermission) {
+                Alert.alert(
+                    'Overlay Permission Required',
+                    'Quickora needs "Display over other apps" permission to alert you with new orders even when you are using other apps or when your screen is locked.',
+                    [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Enable', onPress: () => NativeBridgeService.requestDrawOverAppsPermission() }
+                    ]
+                );
+                return;
+            }
+        }
+
         setIsOnline(value);
         await DriverService.setOnlineStatus(driver.id, value, driverLat, driverLng);
         if (driver) await setDriverData({ ...driver, is_online: value });
 
         // Handle Background Task ─────────
-        if (value) {
-            // 1. Refresh background task metadata
-            await setBackgroundTaskData(driver.id, serviceTypes);
-            
-            // 2. Start location task
-            const { status } = await Location.requestBackgroundPermissionsAsync();
-            if (status === 'granted') {
-                await Location.startLocationUpdatesAsync(BACKGROUND_RIDE_TASK, {
-                    accuracy: Location.Accuracy.Balanced,
-                    timeInterval: 60000, // 60s
-                    distanceInterval: 50,
-                    foregroundService: {
-                        notificationTitle: 'Quickora Driver Online',
-                        notificationBody: 'Searching for nearby rides...',
-                        notificationColor: colors.primary,
-                    },
-                    pausesUpdatesAutomatically: false,
-                });
+        try {
+            if (value) {
+                // 1. Refresh background task metadata
+                await setBackgroundTaskData(driver.id, serviceTypes);
+                
+                // 2. Start location task
+                const { status } = await Location.requestBackgroundPermissionsAsync();
+                if (status === 'granted') {
+                    await Location.startLocationUpdatesAsync(BACKGROUND_RIDE_TASK, {
+                        accuracy: Location.Accuracy.Balanced,
+                        timeInterval: 5000, // 5 seconds
+                        distanceInterval: 0, // Don't require movement
+                        foregroundService: {
+                            notificationTitle: 'Quickora Driver Online',
+                            notificationBody: 'Searching for nearby rides...',
+                            notificationColor: colors.primary,
+                        },
+                        pausesUpdatesAutomatically: false,
+                    });
+                } else {
+                    Alert.alert('Permission Required', 'Background location is needed to receive bookings while the app is closed.');
+                }
             } else {
-                Alert.alert('Permission Required', 'Background location is needed to receive bookings while the app is closed.');
+                // Stop location task
+                const isStarted = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_RIDE_TASK);
+                if (isStarted) {
+                    await Location.stopLocationUpdatesAsync(BACKGROUND_RIDE_TASK);
+                }
             }
-        } else {
-            // Stop location task
-            const isStarted = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_RIDE_TASK);
-            if (isStarted) {
-                await Location.stopLocationUpdatesAsync(BACKGROUND_RIDE_TASK);
-            }
+        } catch (taskErr: any) {
+            console.warn('Background task setup failed:', taskErr?.message);
         }
     };
 
@@ -284,15 +320,26 @@ export default function BookingsScreen() {
                         <Text style={styles.langBadgeText}>{i18n.language === 'en' ? 'தமிழ்' : 'EN'}</Text>
                     </TouchableOpacity>
                     <View style={styles.onlineToggle}>
-                        <Text style={[styles.onlineLabel, isOnline && styles.onlineLabelActive]}>
-                            {isOnline ? t('bookings.online') : t('bookings.offline')}
-                        </Text>
-                        <Switch
-                            value={isOnline}
-                            onValueChange={toggleOnline}
-                            trackColor={{ false: colors.border, true: colors.success }}
-                            thumbColor={colors.white}
-                        />
+                        {driverLat == null || driverLng == null ? (
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                <ActivityIndicator size="small" color={colors.primary} />
+                                <Text style={{ fontFamily: Fonts.medium, fontSize: 12, color: colors.textMuted }}>
+                                    Locating...
+                                </Text>
+                            </View>
+                        ) : (
+                            <>
+                                <Text style={[styles.onlineLabel, isOnline && styles.onlineLabelActive]}>
+                                    {isOnline ? t('bookings.online') : t('bookings.offline')}
+                                </Text>
+                                <Switch
+                                    value={isOnline}
+                                    onValueChange={toggleOnline}
+                                    trackColor={{ false: colors.border, true: colors.success }}
+                                    thumbColor={colors.white}
+                                />
+                            </>
+                        )}
                     </View>
                 </View>
             </View>
@@ -361,9 +408,18 @@ export default function BookingsScreen() {
                         <Feather name="moon" size={36} color={colors.textMuted} />
                         <Text style={styles.offlineTitle}>{t('bookings.youAreOffline')}</Text>
                         <Text style={styles.offlineSubtitle}>{t('bookings.offlineSubtitle')}</Text>
-                        <TouchableOpacity style={styles.goOnlineBtn} onPress={() => toggleOnline(true)}>
-                            <Text style={styles.goOnlineText}>{t('bookings.goOnline')}</Text>
-                        </TouchableOpacity>
+                        {driverLat == null || driverLng == null ? (
+                            <View style={{ alignItems: 'center', gap: 8, marginTop: 10 }}>
+                                <ActivityIndicator color={colors.primary} />
+                                <Text style={{ fontFamily: Fonts.medium, fontSize: 14, color: colors.textSecondary }}>
+                                    Getting your location...
+                                </Text>
+                            </View>
+                        ) : (
+                            <TouchableOpacity style={styles.goOnlineBtn} onPress={() => toggleOnline(true)}>
+                                <Text style={styles.goOnlineText}>{t('bookings.goOnline')}</Text>
+                            </TouchableOpacity>
+                        )}
                     </View>
                 )}
 
@@ -416,11 +472,7 @@ export default function BookingsScreen() {
                                             <Feather name="map-pin" size={14} color={colors.textMuted} />
                                             <Text style={styles.statText}>{ride.distance_km} km trip</Text>
                                         </View>
-                                        <View style={styles.statDivider} />
-                                        <View style={styles.stat}>
-                                            <Feather name="clock" size={14} color={colors.textMuted} />
-                                            <Text style={styles.statText}>~{Math.round(ride.distance_km * 2.5)} min</Text>
-                                        </View>
+
                                         {pickupDist && (
                                             <>
                                                 <View style={styles.statDivider} />
