@@ -18,6 +18,7 @@
         "backgroundColor": "#1565C0"
       },
       "package": "com.quickora.qpartner",
+      "googleServicesFile": "./google-services.json",
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.ACCESS_COARSE_LOCATION",
@@ -42,7 +43,7 @@
           "icon": "./assets/images/icon.png",
           "color": "#1565C0",
           "defaultChannel": "default",
-          "sounds": []
+          "sounds": ["./assets/sounds/booking_alert.wav"]
         }
       ],
       [
@@ -55,7 +56,8 @@
         "expo-location",
         {
           "locationAlwaysAndWhenInUsePermission": "Allow QPartner to use your location to show your position to customers.",
-          "isAndroidBackgroundLocationEnabled": true
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
         }
       ]
     ],

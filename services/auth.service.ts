@@ -3,16 +3,39 @@ import { Driver } from '@/types';
 
 export class AuthService {
     static async sendOTP(phone: string): Promise<string> {
-        const otpCode = '123456';
+        // Generate a random 6-digit OTP
+        const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
         const expiresAt = new Date();
-        expiresAt.setMinutes(expiresAt.getMinutes() + 10);
+        expiresAt.setMinutes(expiresAt.getMinutes() + 2); // 2 minutes validation
 
+        // Retrieve driver_id if driver exists
+        let driverId: string | null = null;
         try {
-            await supabase
-                .from('otp_verifications')
-                .upsert({ phone, otp: otpCode, expires_at: expiresAt.toISOString() });
+            const { data: user } = await supabase
+                .from('users')
+                .select('id')
+                .eq('phone', phone)
+                .eq('is_driver', true)
+                .maybeSingle();
+            if (user) {
+                driverId = user.id;
+            }
         } catch {
-            // Silent — fallback to demo OTP
+            // Safe fallback
+        }
+
+        const { error } = await supabase
+            .from('otp')
+            .upsert({ 
+                phone, 
+                otp: otpCode, 
+                driver_id: driverId, 
+                expires_at: expiresAt.toISOString() 
+            }, { onConflict: 'phone' });
+
+        if (error) {
+            console.error('Supabase OTP Error:', error);
+            throw new Error('Failed to generate and send OTP: ' + error.message);
         }
 
         return otpCode;
@@ -20,29 +43,25 @@ export class AuthService {
 
     static async verifyOTP(phone: string, otp: string): Promise<Driver | null> {
         try {
-            const { data: otpData } = await supabase
-                .from('otp_verifications')
+            const { data: otpData, error: otpError } = await supabase
+                .from('otp')
                 .select('*')
                 .eq('phone', phone)
                 .eq('otp', otp)
                 .single();
 
-            if (otpData) {
-                if (new Date(otpData.expires_at) < new Date()) {
-                    throw new Error('OTP has expired');
-                }
-            } else {
-                if (otp !== '123456') {
-                    throw new Error('Invalid or expired OTP');
-                }
-            }
-        } catch (err: any) {
-            if (err.message === 'OTP has expired' || err.message === 'Invalid or expired OTP') {
-                throw err;
-            }
-            if (otp !== '123456') {
+            if (otpError || !otpData) {
                 throw new Error('Invalid or expired OTP');
             }
+
+            if (new Date(otpData.expires_at) < new Date()) {
+                throw new Error('OTP has expired');
+            }
+        } catch (err: any) {
+            if (err.message === 'OTP has expired') {
+                throw err;
+            }
+            throw new Error('Invalid or expired OTP');
         }
 
         try {

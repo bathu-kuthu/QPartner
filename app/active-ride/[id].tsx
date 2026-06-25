@@ -28,6 +28,7 @@ export default function ActiveRideScreen() {
     const [updating, setUpdating] = useState(false);
     const [netError, setNetError] = useState(false);
     const [unreadCount, setUnreadCount] = useState(0);
+    const [showCompletionModal, setShowCompletionModal] = useState(false);
 
     const channelRef = useRef<any>(null);
     const chatChannelRef = useRef<any>(null);
@@ -90,7 +91,9 @@ export default function ActiveRideScreen() {
 
         channelRef.current = DriverService.subscribeToRide(ride.id, (updated) => {
             setRide(updated);
-            if (updated.status === 'completed' || updated.status === 'cancelled') {
+            if (updated.status === 'completed') {
+                setShowCompletionModal(true);
+            } else if (updated.status === 'cancelled') {
                 router.replace('/(tabs)/bookings');
             }
         });
@@ -161,7 +164,7 @@ export default function ActiveRideScreen() {
                 if (driver) {
                     await setDriverData({ ...driver, total_rides: (driver.total_rides ?? 0) + 1 });
                 }
-                router.replace('/(tabs)/bookings');
+                setShowCompletionModal(true);
             } else {
                 setRide((prev) => prev ? { ...prev, status: newStatus } : null);
 
@@ -426,7 +429,7 @@ export default function ActiveRideScreen() {
                         <Feather name="navigation" size={18} color={colors.primary} />
                     </TouchableOpacity>
 
-                    {ride.status !== 'accepted' ? (
+                    {ride.status === 'on_ride' ? (
                         <>
                             <View style={styles.routeConnector}>
                                 <View style={styles.routeConnectorLine} />
@@ -448,7 +451,7 @@ export default function ActiveRideScreen() {
                     ) : (
                         <View style={styles.dropoffHidden}>
                             <Feather name="lock" size={14} color={colors.textMuted} />
-                            <Text style={styles.dropoffHiddenText}>Drop-off will be revealed after pickup</Text>
+                            <Text style={styles.dropoffHiddenText}>Drop-off will be revealed after OTP verification</Text>
                         </View>
                     )}
                 </View>
@@ -605,6 +608,60 @@ export default function ActiveRideScreen() {
                     <Text style={styles.lockText}>{t('activeRide.lockNote')}</Text>
                 </View>
             </ScrollView>
+
+            {/* Completion Fare Summary Modal Overlay */}
+            {showCompletionModal && (
+                <View style={StyleSheet.absoluteFillObject}>
+                    <View style={styles.modalOverlay}>
+                        <View style={styles.modalContainer}>
+                            <View style={styles.successIconCircle}>
+                                <Feather name="check" size={40} color={colors.white} />
+                            </View>
+                            
+                            <Text style={styles.modalTitle}>Ride Completed!</Text>
+                            <Text style={styles.modalSubtitle}>Here is the fare breakdown for this trip</Text>
+                            
+                            <View style={styles.modalTotalContainer}>
+                                <Text style={styles.modalTotalLabel}>TOTAL CHARGE</Text>
+                                <Text style={styles.modalTotalValue}>₹{ride?.fare}</Text>
+                            </View>
+                            
+                            <View style={styles.modalDetailsCard}>
+                                <View style={styles.modalDetailRow}>
+                                    <Text style={styles.modalDetailKey}>Trip Distance</Text>
+                                    <Text style={styles.modalDetailVal}>{ride?.distance_km} km</Text>
+                                </View>
+                                {ride?.base_fare != null && (
+                                    <View style={styles.modalDetailRow}>
+                                        <Text style={styles.modalDetailKey}>Base Fare</Text>
+                                        <Text style={styles.modalDetailVal}>₹{ride.base_fare}</Text>
+                                    </View>
+                                )}
+                                {ride?.distance_fare != null && (
+                                    <View style={styles.modalDetailRow}>
+                                        <Text style={styles.modalDetailKey}>Distance Fare</Text>
+                                        <Text style={styles.modalDetailVal}>₹{ride.distance_fare}</Text>
+                                    </View>
+                                )}
+                                {(ride?.waiting_charge ?? 0) > 0 && (
+                                    <View style={styles.modalDetailRow}>
+                                        <Text style={styles.modalDetailKey}>Waiting Charge</Text>
+                                        <Text style={[styles.modalDetailVal, { color: colors.warning }]}>₹{ride.waiting_charge}</Text>
+                                    </View>
+                                )}
+                            </View>
+                            
+                            <TouchableOpacity 
+                                style={styles.modalDoneBtn} 
+                                onPress={() => router.replace('/(tabs)/bookings')}
+                                activeOpacity={0.8}
+                            >
+                                <Text style={styles.modalDoneBtnText}>Done</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            )}
         </View>
     );
 }
@@ -814,4 +871,109 @@ const styles = StyleSheet.create({
     },
     parcelLabel: { fontFamily: Fonts.medium, fontSize: 13, color: colors.textSecondary, flex: 0, width: 60 },
     parcelPhone: { flex: 1, fontFamily: Fonts.bold, fontSize: 14, color: colors.text },
+
+    // Modal completion styling
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: 24,
+    },
+    modalContainer: {
+        width: '100%',
+        backgroundColor: colors.surface,
+        borderRadius: 24,
+        padding: 24,
+        alignItems: 'center',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.25,
+        shadowRadius: 10,
+        elevation: 10,
+    },
+    successIconCircle: {
+        width: 80,
+        height: 80,
+        borderRadius: 40,
+        backgroundColor: colors.success,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 16,
+    },
+    modalTitle: {
+        fontFamily: Fonts.bold,
+        fontSize: 22,
+        color: colors.text,
+        marginBottom: 4,
+    },
+    modalSubtitle: {
+        fontFamily: Fonts.regular,
+        fontSize: 14,
+        color: colors.textSecondary,
+        textAlign: 'center',
+        marginBottom: 20,
+    },
+    modalTotalContainer: {
+        backgroundColor: colors.primaryLight,
+        width: '100%',
+        paddingVertical: 16,
+        borderRadius: 16,
+        alignItems: 'center',
+        marginBottom: 16,
+    },
+    modalTotalLabel: {
+        fontFamily: Fonts.bold,
+        fontSize: 12,
+        color: colors.primary,
+        letterSpacing: 1,
+        marginBottom: 4,
+    },
+    modalTotalValue: {
+        fontFamily: Fonts.black,
+        fontSize: 32,
+        color: colors.primary,
+    },
+    modalDetailsCard: {
+        width: '100%',
+        backgroundColor: colors.background,
+        borderRadius: 16,
+        padding: 16,
+        gap: 12,
+        marginBottom: 20,
+        borderWidth: 1,
+        borderColor: colors.border,
+    },
+    modalDetailRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    modalDetailKey: {
+        fontFamily: Fonts.medium,
+        fontSize: 14,
+        color: colors.textSecondary,
+    },
+    modalDetailVal: {
+        fontFamily: Fonts.bold,
+        fontSize: 14,
+        color: colors.text,
+    },
+    modalDoneBtn: {
+        backgroundColor: colors.primary,
+        width: '100%',
+        paddingVertical: 16,
+        borderRadius: 16,
+        alignItems: 'center',
+        shadowColor: colors.primary,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 4,
+    },
+    modalDoneBtnText: {
+        fontFamily: Fonts.bold,
+        fontSize: 16,
+        color: colors.white,
+    },
 });

@@ -7,12 +7,14 @@ import NetInfo from '@react-native-community/netinfo';
 import * as Location from 'expo-location';
 import { Feather } from '@expo/vector-icons';
 import { colors, Fonts } from '@/constants/colors';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type BannerType = 'internet_lost' | 'internet_back' | 'location_off' | 'location_permission' | null;
 
 export function GlobalStatusBanner() {
     const [banner, setBanner] = useState<BannerType>(null);
-    const slideAnim = useRef(new Animated.Value(-60)).current;
+    const insets = useSafeAreaInsets();
+    const slideAnim = useRef(new Animated.Value(-150)).current;
     const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const wasOffline = useRef(false);
 
@@ -95,7 +97,7 @@ export function GlobalStatusBanner() {
 
     const hideBanner = () => {
         Animated.timing(slideAnim, {
-            toValue: -60,
+            toValue: -150,
             duration: 250,
             useNativeDriver: true,
         }).start(() => setBanner(null));
@@ -164,7 +166,11 @@ export function GlobalStatusBanner() {
         <Animated.View
             style={[
                 styles.banner,
-                { backgroundColor: config.bg, transform: [{ translateY: slideAnim }] },
+                { 
+                    backgroundColor: config.bg, 
+                    transform: [{ translateY: slideAnim }],
+                    paddingTop: Math.max(insets.top, 10)
+                },
             ]}
         >
             <Feather name={config.icon} size={16} color={colors.white} />

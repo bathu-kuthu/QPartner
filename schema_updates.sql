@@ -129,3 +129,25 @@ BEGIN
   WHERE id = p_driver_id;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- =========================================================================
+-- 5. OTP TABLE CREATION (2-MINUTE VALIDATION)
+-- =========================================================================
+-- Stores generated login OTPs associated with the mobile number and driver_id.
+CREATE TABLE IF NOT EXISTS public.otp (
+    phone text PRIMARY KEY,
+    driver_id uuid REFERENCES public.users(id) ON DELETE CASCADE,
+    otp text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+-- Enable Row Level Security (RLS)
+ALTER TABLE public.otp ENABLE ROW LEVEL SECURITY;
+
+-- Drop policy if it exists and create new
+DROP POLICY IF EXISTS "Allow all operations for anon" ON public.otp;
+CREATE POLICY "Allow all operations for anon" ON public.otp FOR ALL USING (true) WITH CHECK (true);
+
+-- Grant permissions to client roles
+GRANT ALL ON public.otp TO anon, authenticated, service_role;

@@ -70,16 +70,9 @@ export class DriverService {
 
             const rawRides = (data ?? []) as Ride[];
 
-            if (driverLat == null || driverLng == null) return [];
+            if (driverLat == null || driverLng == null) return rawRides;
             
-            const rides = rawRides.filter((ride) => {
-                const dist = haversineKm(
-                    driverLat, driverLng,
-                    ride.pickup_location?.latitude ?? 0,
-                    ride.pickup_location?.longitude ?? 0
-                );
-                return dist < 3.0;
-            });
+            const rides = [...rawRides];
 
             rides.sort((a, b) => {
                 const dA = haversineKm(driverLat, driverLng, a.pickup_location?.latitude ?? 0, a.pickup_location?.longitude ?? 0);

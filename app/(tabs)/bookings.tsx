@@ -1,20 +1,27 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import {
-    View, Text, TouchableOpacity, StyleSheet, ScrollView,
-    RefreshControl, ActivityIndicator, Alert, Switch, AppState, AppStateStatus,
-} from 'react-native';
-import { router } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Feather } from '@expo/vector-icons';
-import * as Location from 'expo-location';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase } from '@/config/supabase';
 import { colors, Fonts } from '@/constants/colors';
 import { useAuth } from '@/contexts/auth-context';
-import { DriverService, getServiceTypesForDriver } from '@/services/driver.service';
-import { useTranslation } from 'react-i18next';
 import { BACKGROUND_RIDE_TASK, setBackgroundTaskData } from '@/services/background-task';
-import { Ride } from '@/types';
+import { DriverService, getServiceTypesForDriver } from '@/services/driver.service';
 import { NativeBridgeService } from '@/services/native-bridge.service';
+import { Ride } from '@/types';
+import { Feather } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Location from 'expo-location';
+import { router } from 'expo-router';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import {
+    ActivityIndicator, Alert,
+    AppState, AppStateStatus,
+    RefreshControl,
+    ScrollView,
+    StyleSheet,
+    Switch,
+    Text, TouchableOpacity,
+    View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const ACCEPT_BOTH_KEY = '@quickora_accept_both';
 
@@ -76,6 +83,13 @@ export default function BookingsScreen() {
         if (driver?.id) {
             const types = getServiceTypesForDriver(driver.vehicle_category ?? 'taxi', driver.vehicle_type ?? 'bike', val);
             await setBackgroundTaskData(driver.id, types);
+            // Persist to DB — the notify-driver Edge Function reads accept_both
+            // server-side to decide which drivers qualify for cross-category push notifications.
+            try {
+                await supabase.from('users').update({ accept_both: val }).eq('id', driver.id);
+            } catch (e) {
+                console.warn('Failed to persist accept_both to DB:', e);
+            }
         }
     };
 
@@ -228,7 +242,7 @@ export default function BookingsScreen() {
             if (value) {
                 // 1. Refresh background task metadata
                 await setBackgroundTaskData(driver.id, serviceTypes);
-                
+
                 // 2. Start location task
                 const { status } = await Location.requestBackgroundPermissionsAsync();
                 if (status === 'granted') {

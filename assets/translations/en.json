@@ -18,7 +18,7 @@
     "welcome": "Welcome Back",
     "subtitle": "Enter your phone number to continue",
     "placeholder": "10-digit phone number",
-    "demoNote": "Demo OTP: 123456",
+    "demoNote": "Verification code will be generated and saved to your account.",
     "termsNote": "By joining, you agree to our Terms of Service",
     "termsLink": "Terms of Service"
   },

@@ -1,6 +1,9 @@
-import 'react-native-url-polyfill/auto';
 import '@/config/i18n'; // Initialize i18n
 import { AuthProvider, useAuth } from '@/contexts/auth-context';
+import '@/services/background-task'; // Register task-manager definition
+import { DriverService } from '@/services/driver.service';
+import { NOTIFICATION_ACTIONS, NotificationService } from '@/services/notification.service';
+import Constants from 'expo-constants';
 import { useFonts } from 'expo-font';
 import { Stack, router, useRootNavigationState } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
@@ -8,8 +11,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef } from 'react';
 import { LogBox, Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { NotificationService, NOTIFICATION_ACTIONS } from '@/services/notification.service';
-import Constants from 'expo-constants';
+import 'react-native-url-polyfill/auto';
 
 const IS_EXPO_GO = Constants.appOwnership === 'expo';
 
@@ -17,17 +19,16 @@ LogBox.ignoreLogs([
     'expo-notifications: Android Push notifications',
     '`expo-notifications` functionality is not fully supported',
 ]);
-import { DriverService } from '@/services/driver.service';
-import '@/services/background-task'; // Register task-manager definition
 
 SplashScreen.preventAutoHideAsync();
 
-import { useState } from 'react';
 import { GlobalRideAlertModal } from '@/components/GlobalRideAlertModal';
+import { GlobalStatusBanner } from '@/components/GlobalStatusBanner';
 import { supabase } from '@/config/supabase';
 import { getServiceTypesForDriver } from '@/services/driver.service';
+import { registerDriverPushToken } from '@/services/push-token.service';
 import * as Location from 'expo-location';
-import { GlobalStatusBanner } from '@/components/GlobalStatusBanner';
+import { useState } from 'react';
 
 function RootContent() {
     const { driver, loading } = useAuth();
@@ -68,15 +69,17 @@ function RootContent() {
                         const { NativeBridgeService } = await import('@/services/native-bridge.service');
                         overlay = await NativeBridgeService.checkDrawOverAppsPermission();
                     }
-                    
+
                     if (
-                        fg.status !== 'granted' || 
-                        bg.status !== 'granted' || 
-                        notif.status !== 'granted' || 
+                        fg.status !== 'granted' ||
+                        bg.status !== 'granted' ||
+                        notif.status !== 'granted' ||
                         !overlay
                     ) {
                         router.replace('/(auth)/permissions');
                     } else {
+                        // Register FCM push token so Edge Function can notify this device
+                        registerDriverPushToken(driver.id).catch(console.warn);
                         router.replace('/(tabs)/bookings');
                     }
                 } catch (e) {
@@ -210,15 +213,16 @@ function RootContent() {
         import('expo-notifications').then((N) => {
             if (!isMounted) return;
 
-            // 1. Response (Click) Listener
+            // 1. Response (Click/Action) Listener — fires when driver taps FCM notification
             subResponse = N.addNotificationResponseReceivedListener(async (response) => {
                 const data = response.notification.request.content.data as any;
                 const actionId = response.actionIdentifier;
                 const rideId = data.rideId;
 
-                console.log('Notification response received:', { actionId, data });
+                console.log('[Layout] Notification tapped:', { actionId, type: data.type });
 
                 if (actionId === NOTIFICATION_ACTIONS.ACCEPT && rideId && driver.id) {
+                    // Driver tapped "Accept" action button directly from notification tray
                     try {
                         const ride = await DriverService.acceptRide(rideId, driver.id);
                         if (ride) {
@@ -226,14 +230,36 @@ function RootContent() {
                             router.push(`/active-ride/${rideId}`);
                         }
                     } catch (e: any) {
-                        console.error('Accept ride notification failed:', e.message);
+                        console.error('[Layout] Accept via notification action failed:', e.message);
                         router.push(`/(tabs)/bookings`);
+                    }
+                } else if (data.type === 'NEW_BOOKING' && rideId && driver.is_online) {
+                    // Driver tapped the notification body — check if ride still available,
+                    // then show the ride alert modal
+                    try {
+                        const { data: ride } = await supabase
+                            .from('rides')
+                            .select('*')
+                            .eq('id', rideId)
+                            .eq('status', 'pending')
+                            .is('driver_id', null)
+                            .single();
+
+                        if (ride && isMounted) {
+                            setIncomingRide(ride);
+                        } else {
+                            // Ride already taken — just navigate to bookings
+                            router.push('/(tabs)/bookings');
+                        }
+                    } catch (err) {
+                        console.warn('[Layout] Failed to fetch ride from notification tap:', err);
+                        router.push('/(tabs)/bookings');
                     }
                 } else if (data.url) {
                     setIncomingRide(null);
                     router.push(data.url);
                 } else {
-                    router.push(`/(tabs)/bookings`);
+                    router.push('/(tabs)/bookings');
                 }
             });
 

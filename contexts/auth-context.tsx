@@ -1,7 +1,7 @@
-import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Driver } from '@/types';
 import { supabase } from '@/config/supabase';
+import { Driver } from '@/types';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
 
 interface AuthContextType {
     driver: Driver | null;
@@ -115,6 +115,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const logout = async () => {
         try {
+            // Clear FCM token first so this device stops receiving ride pushes
+            // for the session that's ending. Best-effort: don't block logout on it.
+            if (driver?.id) {
+                const { unregisterDriverPushToken } = await import('@/services/push-token.service');
+                unregisterDriverPushToken(driver.id).catch((e) =>
+                    console.warn('Failed to clear FCM token on logout:', e)
+                );
+            }
             await AsyncStorage.removeItem(DRIVER_STORAGE_KEY);
             setDriverState(null);
         } catch (e) {
