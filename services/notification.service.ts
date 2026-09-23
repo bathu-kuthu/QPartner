@@ -54,18 +54,56 @@ export class NotificationService {
             ]);
         }
 
-        // Register background notification handler for FCM data messages
+        // Register background notification handler for FCM data messages.
+        // Uses retry-with-backoff because expo-notifications' native SharedPreferences
+        // store can throw NullPointerException if called before the Android app context
+        // fully initializes — retrying after a short wait resolves this reliably.
         if (Platform.OS === 'android') {
-            try {
-                const { BACKGROUND_NOTIFICATION_TASK } = await import('./background-task');
-                await Notifications.registerTaskAsync(BACKGROUND_NOTIFICATION_TASK);
-                console.log('[NotificationService] Background task registered');
-            } catch (err) {
-                console.warn('[NotificationService] Failed to register background task:', err);
-            }
+            this._registerBackgroundTaskWithRetry();
         }
 
         await this.scheduleDailyReminders();
+    }
+
+    // ─── Background Task Registration (with retry-backoff) ────────────────────
+    /**
+     * Registers the FCM background notification task.
+     * Retries up to MAX_RETRIES times with exponential backoff to handle the
+     * transient NullPointerException on Android SharedPreferences that occurs
+     * when the native context isn't fully ready at app startup.
+     */
+    private static async _registerBackgroundTaskWithRetry(
+        attempt = 1,
+        maxAttempts = 4,
+        baseDelayMs = 3000,
+    ): Promise<void> {
+        try {
+            await new Promise(resolve => setTimeout(resolve, baseDelayMs * attempt));
+
+            const [{ BACKGROUND_NOTIFICATION_TASK }, TaskManager] = await Promise.all([
+                import('./background-task'),
+                import('expo-task-manager'),
+            ]);
+
+            // Skip if already registered (e.g., hot reload)
+            const alreadyRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_NOTIFICATION_TASK);
+            if (alreadyRegistered) {
+                console.log('[NotificationService] Background task already registered — skipping');
+                return;
+            }
+
+            await Notifications.registerTaskAsync(BACKGROUND_NOTIFICATION_TASK);
+            console.log(`[NotificationService] Background task registered (attempt ${attempt})`);
+        } catch (err: any) {
+            if (attempt < maxAttempts) {
+                console.log(`[NotificationService] Background task registration failed (attempt ${attempt}/${maxAttempts}), retrying in ${baseDelayMs * (attempt + 1) / 1000}s...`);
+                this._registerBackgroundTaskWithRetry(attempt + 1, maxAttempts, baseDelayMs);
+            } else {
+                // Non-fatal — FCM still delivers notifications directly via the 'bookings'
+                // channel. The background task only adds extra local-data processing.
+                console.warn('[NotificationService] Background task registration permanently failed (non-fatal):', err?.message ?? err);
+            }
+        }
     }
 
     // ─── Permission + Channel Setup ───────────────────────────────────────────
@@ -181,6 +219,39 @@ export class NotificationService {
                     rideId: ride.id,
                     url: '/(tabs)/bookings',
                     type: 'NEW_BOOKING',
+                },
+                categoryIdentifier: NOTIFICATION_CATEGORIES.NEW_BOOKING,
+                sound: 'booking_alert.wav',
+                // @ts-ignore
+                channelId: 'bookings',
+            },
+            trigger: null,
+        });
+    }
+
+    /**
+     * Fires a repeated booking notification during the continuous notification engine loop.
+     * Uses a fixed identifier so the OS replaces the previous notification in the shade
+     * instead of stacking multiple entries. Called by NotificationEngine every 8 seconds.
+     */
+    static async notifyBookingRepeat(ride: any, count: number) {
+        const FIXED_ID = 'continuous_booking_alert';
+        const serviceLabel = (ride.service_type ?? '').replace('_', ' ').toUpperCase();
+        await Notifications.scheduleNotificationAsync({
+            identifier: FIXED_ID,
+            content: {
+                title: `🚖 New Booking! (${count})`,
+                body: `${serviceLabel} • ₹${ride.fare} • ${ride.distance_km}km`,
+                data: {
+                    rideId: ride.id,
+                    url: '/(tabs)/bookings',
+                    type: 'NEW_BOOKING',
+                    pickupAddress: ride.pickup_address,
+                    dropAddress: ride.drop_address,
+                    fare: ride.fare,
+                    distanceKm: ride.distance_km,
+                    serviceType: ride.service_type,
+                    details: ride.details,
                 },
                 categoryIdentifier: NOTIFICATION_CATEGORIES.NEW_BOOKING,
                 sound: 'booking_alert.wav',

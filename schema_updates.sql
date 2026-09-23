@@ -151,3 +151,26 @@ CREATE POLICY "Allow all operations for anon" ON public.otp FOR ALL USING (true)
 
 -- Grant permissions to client roles
 GRANT ALL ON public.otp TO anon, authenticated, service_role;
+
+-- =========================================================================
+-- 6. ADD FCM PUSH TOKEN COLUMN TO USERS TABLE
+-- =========================================================================
+-- Stores the device FCM token so the Edge Function can send push notifications
+-- to a specific driver's device.
+-- Run this in the Supabase SQL Editor.
+
+ALTER TABLE public.users
+    ADD COLUMN IF NOT EXISTS fcm_token text;
+
+-- Optional index for quick lookup by token (e.g., to find which driver owns a token)
+CREATE INDEX IF NOT EXISTS idx_users_fcm_token ON public.users (fcm_token)
+    WHERE fcm_token IS NOT NULL;
+
+-- Allow authenticated drivers to update their own fcm_token
+-- (RLS policy — only updates rows where auth.uid() = id)
+CREATE POLICY IF NOT EXISTS "Driver can update own fcm_token"
+    ON public.users
+    FOR UPDATE
+    TO authenticated
+    USING (auth.uid() = id)
+    WITH CHECK (auth.uid() = id);

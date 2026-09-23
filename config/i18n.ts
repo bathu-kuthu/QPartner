@@ -14,7 +14,14 @@ const resources = {
 const LANGUAGE_KEY = 'user-language';
 
 const initI18n = async () => {
-  let savedLanguage = await AsyncStorage.getItem(LANGUAGE_KEY);
+  // Skip AsyncStorage during SSR (expo-router static render in Node.js — window/window is undefined)
+  const isSSR = typeof window === 'undefined';
+
+  let savedLanguage: string | null = null;
+
+  if (!isSSR) {
+    savedLanguage = await AsyncStorage.getItem(LANGUAGE_KEY);
+  }
 
   if (!savedLanguage) {
     const locales = Localization.getLocales();

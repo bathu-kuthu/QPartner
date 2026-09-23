@@ -123,12 +123,7 @@ async function sendFcmPush(fcmToken: string, ride: any, accessToken: string): Pr
     const payload = {
         message: {
             token: fcmToken,
-            // Notification block: shown by OS when app is background/killed
-            notification: {
-                title: '🚖 New Booking Request!',
-                body: `${serviceLabel} • ₹${ride.fare} • ${ride.distance_km}km`,
-            },
-            // Data block: received by JS background handler
+            // Data block: received by Native Kotlin service and JS background handler
             data: {
                 type: 'NEW_BOOKING',
                 rideId: String(ride.id),
@@ -146,18 +141,6 @@ async function sendFcmPush(fcmToken: string, ride: any, accessToken: string): Pr
             // Android specific config
             android: {
                 priority: 'HIGH',
-                notification: {
-                    channel_id: 'bookings',         // Must match channel created in app
-                    sound: 'booking_alert',
-                    notification_priority: 'PRIORITY_MAX',
-                    visibility: 'PUBLIC',
-                    vibrate_timings_millis: ['0', '500', '200', '500', '200', '500'],
-                    default_vibrate_timings: false,
-                    tag: `ride_${ride.id}`,         // Replaces previous notification for same ride
-                    click_action: 'OPEN_ACTIVITY',
-                    color: '#1565C0',
-                    icon: 'ic_notification',
-                },
             },
         },
     };

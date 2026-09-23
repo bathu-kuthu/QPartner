@@ -169,3 +169,104 @@ export interface DriverPlatformFee {
     payment_note?: string;
     status: string;
 }
+
+// ─── Food & Grocery Domain Models ──────────────────────────────────────────
+
+export type DeliveryStatus =
+    | 'pending'
+    | 'confirmed'
+    | 'preparing'
+    | 'out_for_delivery'
+    | 'delivered'
+    | 'cancelled';
+
+export interface Store {
+    id: string;
+    name: string;
+    type: 'restaurant' | 'grocery' | 'retail' | string;
+    address: string;
+    latitude: number;
+    longitude: number;
+    rating?: number;
+    rating_count?: number;
+    image_url?: string;
+    is_active: boolean;
+    phone?: string;
+}
+
+export interface OrderItem {
+    id: string;
+    name: string;
+    price: number;
+    quantity: number;
+    image_url?: string;
+    is_veg?: boolean;
+    description?: string;
+    options?: Record<string, any>;
+}
+
+export interface FoodOrder {
+    id: string;
+    user_id: string;
+    store_id: string;
+    store_type: 'food';
+    items: OrderItem[];
+    subtotal: number;
+    delivery_fee: number;
+    total: number;
+    delivery_address: string;
+    status: DeliveryStatus;
+    payment_method: 'cod' | 'upi';
+    payment_status: 'pending' | 'paid' | 'failed' | 'refunded';
+    notes?: string | null;
+    delivery_lat?: number | null;
+    delivery_lng?: number | null;
+    store_lat?: number | null;
+    store_lng?: number | null;
+    customer_name?: string | null;
+    customer_phone?: string | null;
+    distance_km?: number | null;
+    created_at: string;
+    updated_at: string;
+    store?: Store;
+    user?: {
+        phone: string;
+        name: string;
+    };
+}
+
+export interface GroceryOrder {
+    id: string;
+    user_id: string;
+    store_id: string;
+    store_type: 'grocery';
+    items: OrderItem[];
+    subtotal: number;
+    delivery_fee: number;
+    total: number;
+    delivery_address: string;
+    status: DeliveryStatus;
+    payment_method: 'cod' | 'upi';
+    payment_status: 'pending' | 'paid' | 'failed' | 'refunded';
+    notes?: string | null;
+    delivery_lat?: number | null;
+    delivery_lng?: number | null;
+    store_lat?: number | null;
+    store_lng?: number | null;
+    customer_name?: string | null;
+    customer_phone?: string | null;
+    distance_km?: number | null;
+    created_at: string;
+    updated_at: string;
+    store?: Store;
+    user?: {
+        phone: string;
+        name: string;
+    };
+}
+
+export type UnifiedWorkItem =
+    | { domain: 'transport'; id: string; ride: Ride }
+    | { domain: 'food'; id: string; order: FoodOrder }
+    | { domain: 'grocery'; id: string; order: GroceryOrder };
+

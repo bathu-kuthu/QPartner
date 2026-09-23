@@ -6,36 +6,6 @@ export class NativeBridgeService {
     static isAndroid = Platform.OS === 'android';
 
     /**
-     * Checks if Draw Over Other Apps (SYSTEM_ALERT_WINDOW) permission is granted.
-     * Always returns true on non-Android platforms.
-     */
-    static async checkDrawOverAppsPermission(): Promise<boolean> {
-        if (!this.isAndroid || !DriverServiceModule) return true;
-        try {
-            return await DriverServiceModule.drawOverAppsPermissionStatus();
-        } catch (e) {
-            console.error('Error checking draw over apps permission:', e);
-            return false;
-        }
-    }
-
-    /**
-     * Requests the Draw Over Other Apps permission by opening settings.
-     */
-    static requestDrawOverAppsPermission(): void {
-        if (!this.isAndroid || !DriverServiceModule) return;
-        DriverServiceModule.requestDrawOverAppsPermission();
-    }
-
-    /**
-     * Brings the app from the background to the foreground.
-     */
-    static bringAppToForeground(): void {
-        if (!this.isAndroid || !DriverServiceModule) return;
-        DriverServiceModule.bringAppToForeground();
-    }
-
-    /**
      * Starts continuous ringing (using default alarm/ringtone).
      */
     static startRinging(): void {
@@ -49,5 +19,45 @@ export class NativeBridgeService {
     static stopRinging(): void {
         if (!this.isAndroid || !DriverServiceModule) return;
         DriverServiceModule.stopRinging();
+    }
+
+    /**
+     * Starts the floating widget foreground service.
+     */
+    static startFloatingWidget(): void {
+        if (!this.isAndroid || !DriverServiceModule) return;
+        DriverServiceModule.startFloatingWidget();
+    }
+
+    /**
+     * Stops the floating widget foreground service.
+     */
+    static stopFloatingWidget(): void {
+        if (!this.isAndroid || !DriverServiceModule) return;
+        DriverServiceModule.stopFloatingWidget();
+    }
+
+    /**
+     * Updates the data displayed in the floating widget.
+     */
+    static updateFloatingWidgetData(jsonData: string): void {
+        if (!this.isAndroid || !DriverServiceModule) return;
+        DriverServiceModule.updateFloatingWidgetData(jsonData);
+    }
+
+    /**
+     * Checks if Draw Over Other Apps (SYSTEM_ALERT_WINDOW) permission is granted.
+     */
+    static async checkDrawOverAppsPermission(): Promise<boolean> {
+        if (!this.isAndroid || !DriverServiceModule) return true;
+        return await DriverServiceModule.checkDrawOverAppsPermission();
+    }
+
+    /**
+     * Opens Android settings to request Draw Over Other Apps permission.
+     */
+    static requestDrawOverAppsPermission(): void {
+        if (!this.isAndroid || !DriverServiceModule) return;
+        DriverServiceModule.requestDrawOverAppsPermission();
     }
 }

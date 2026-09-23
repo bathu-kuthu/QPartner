@@ -2,6 +2,7 @@ import '@/config/i18n'; // Initialize i18n
 import { AuthProvider, useAuth } from '@/contexts/auth-context';
 import '@/services/background-task'; // Register task-manager definition
 import { DriverService } from '@/services/driver.service';
+import { NotificationEngine } from '@/services/notification-engine.service';
 import { NOTIFICATION_ACTIONS, NotificationService } from '@/services/notification.service';
 import Constants from 'expo-constants';
 import { useFonts } from 'expo-font';
@@ -18,21 +19,27 @@ const IS_EXPO_GO = Constants.appOwnership === 'expo';
 LogBox.ignoreLogs([
     'expo-notifications: Android Push notifications',
     '`expo-notifications` functionality is not fully supported',
+    'Unable to activate keep awake',
 ]);
 
 SplashScreen.preventAutoHideAsync();
 
 import { GlobalRideAlertModal } from '@/components/GlobalRideAlertModal';
+import { GlobalOrderAlertModal } from '@/components/GlobalOrderAlertModal';
 import { GlobalStatusBanner } from '@/components/GlobalStatusBanner';
 import { supabase } from '@/config/supabase';
 import { getServiceTypesForDriver } from '@/services/driver.service';
+import { FoodDriverService } from '@/services/food-driver.service';
+import { GroceryDriverService } from '@/services/grocery-driver.service';
 import { registerDriverPushToken } from '@/services/push-token.service';
+import { FoodOrder, GroceryOrder } from '@/types';
 import * as Location from 'expo-location';
 import { useState } from 'react';
 
 function RootContent() {
     const { driver, loading } = useAuth();
     const [incomingRide, setIncomingRide] = useState<any>(null);
+    const [incomingOrder, setIncomingOrder] = useState<{ domain: 'food' | 'grocery'; order: FoodOrder | GroceryOrder } | null>(null);
     const rootNavState = useRootNavigationState();
     const hasRouted = useRef(false); // Prevent re-routing after initial navigation
 
@@ -49,13 +56,13 @@ function RootContent() {
 
         if (!driver) {
             hasRouted.current = true;
-            router.replace('/(auth)/login');
+            setTimeout(() => router.replace('/(auth)/login'), 0);
         } else if (!driver.is_driver || driver.rider_status === 'unsubmitted') {
             hasRouted.current = true;
-            router.replace('/(auth)/onboarding');
+            setTimeout(() => router.replace('/(auth)/onboarding'), 0);
         } else if (driver.rider_status === 'pending' || driver.rider_status === 'rejected') {
             hasRouted.current = true;
-            router.replace('/(auth)/onboarding');
+            setTimeout(() => router.replace('/(auth)/onboarding'), 0);
         } else if (driver.rider_status === 'verified') {
             hasRouted.current = true;
             // Async check for required permissions before going to bookings
@@ -76,20 +83,20 @@ function RootContent() {
                         notif.status !== 'granted' ||
                         !overlay
                     ) {
-                        router.replace('/(auth)/permissions');
+                        setTimeout(() => router.replace('/(auth)/permissions'), 0);
                     } else {
                         // Register FCM push token so Edge Function can notify this device
                         registerDriverPushToken(driver.id).catch(console.warn);
-                        router.replace('/(tabs)/bookings');
+                        setTimeout(() => router.replace('/(tabs)/bookings'), 0);
                     }
                 } catch (e) {
                     // Fallback
-                    router.replace('/(tabs)/bookings');
+                    setTimeout(() => router.replace('/(tabs)/bookings'), 0);
                 }
             })();
         } else {
             hasRouted.current = true;
-            router.replace('/(auth)/onboarding');
+            setTimeout(() => router.replace('/(auth)/onboarding'), 0);
         }
     }, [driver, loading, rootNavState?.key]);
 
@@ -293,8 +300,19 @@ function RootContent() {
         };
     }, [driver?.id, driver?.is_online]);
 
+    // ─── Continuous Notification Engine ──────────────────────────────────────
+    // Start the engine whenever a new pending ride appears; stop it when cleared.
+    useEffect(() => {
+        if (incomingRide) {
+            NotificationEngine.start(incomingRide);
+        } else {
+            NotificationEngine.stop();
+        }
+    }, [incomingRide]);
+
     const handleAcceptRide = async (rideId: string) => {
         if (!driver?.id) return;
+        NotificationEngine.stop();   // Stop immediately — don't wait for state update
         try {
             const ride = await DriverService.acceptRide(rideId, driver.id);
             setIncomingRide(null);
@@ -308,7 +326,36 @@ function RootContent() {
     };
 
     const handleDeclineRide = () => {
+        NotificationEngine.stop();   // Stop immediately
         setIncomingRide(null);
+    };
+
+    const handleAcceptOrder = async (orderId: string, domain: 'food' | 'grocery') => {
+        if (!driver?.id) return;
+        NotificationEngine.stop();
+        try {
+            if (domain === 'food') {
+                const claimed = await FoodDriverService.claimOrder(orderId);
+                setIncomingOrder(null);
+                if (claimed) {
+                    router.push(`/active-food/${orderId}` as any);
+                }
+            } else {
+                const claimed = await GroceryDriverService.claimOrder(orderId);
+                setIncomingOrder(null);
+                if (claimed) {
+                    router.push(`/active-grocery/${orderId}` as any);
+                }
+            }
+        } catch (e: any) {
+            setIncomingOrder(null);
+            console.error('Accept order failed:', e.message);
+        }
+    };
+
+    const handleDeclineOrder = () => {
+        NotificationEngine.stop();
+        setIncomingOrder(null);
     };
 
     return (
@@ -320,6 +367,8 @@ function RootContent() {
                 <Stack.Screen name="(auth)" />
                 <Stack.Screen name="(tabs)" />
                 <Stack.Screen name="active-ride" />
+                <Stack.Screen name="active-food" />
+                <Stack.Screen name="active-grocery" />
                 <Stack.Screen name="chat" options={{ animation: 'slide_from_right' }} />
                 <Stack.Screen name="terms" />
             </Stack>
@@ -331,6 +380,16 @@ function RootContent() {
                 driverLng={driver?.current_lng}
                 onAccept={handleAcceptRide}
                 onDecline={handleDeclineRide}
+            />
+
+            <GlobalOrderAlertModal
+                visible={incomingOrder !== null}
+                domain={incomingOrder?.domain ?? 'food'}
+                order={incomingOrder?.order ?? null}
+                driverLat={driver?.current_lat}
+                driverLng={driver?.current_lng}
+                onAccept={handleAcceptOrder}
+                onDecline={handleDeclineOrder}
             />
         </>
     );

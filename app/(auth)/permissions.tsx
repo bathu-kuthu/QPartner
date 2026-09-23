@@ -62,7 +62,6 @@ export default function PermissionsScreen() {
 
     const requestOverlay = async () => {
         NativeBridgeService.requestDrawOverAppsPermission();
-        // Since we can't easily wait for settings to return, we tell them to press "Check Again"
         Alert.alert(
             'Settings Opened',
             'Please find Quickora in the list, enable "Allow display over other apps", then return and press "Check Again".'
@@ -112,7 +111,7 @@ export default function PermissionsScreen() {
                 {Platform.OS === 'android' && (
                     <PermissionCard
                         title="Display Over Other Apps"
-                        description="Allows the app to show a popup order card and ring an alarm even if you are using YouTube or WhatsApp."
+                        description="Allows the app to show a floating card with order details even if you are using YouTube or WhatsApp."
                         icon="layers"
                         granted={overlayGranted}
                         onPress={requestOverlay}

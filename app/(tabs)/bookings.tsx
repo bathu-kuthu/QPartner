@@ -3,9 +3,11 @@ import { colors, Fonts } from '@/constants/colors';
 import { useAuth } from '@/contexts/auth-context';
 import { BACKGROUND_RIDE_TASK, setBackgroundTaskData } from '@/services/background-task';
 import { DriverService, getServiceTypesForDriver } from '@/services/driver.service';
+import { FoodDriverService } from '@/services/food-driver.service';
+import { GroceryDriverService } from '@/services/grocery-driver.service';
 import { NativeBridgeService } from '@/services/native-bridge.service';
-import { Ride } from '@/types';
-import { Feather } from '@expo/vector-icons';
+import { FoodOrder, GroceryOrder, Ride } from '@/types';
+import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import { router } from 'expo-router';
@@ -14,6 +16,7 @@ import { useTranslation } from 'react-i18next';
 import {
     ActivityIndicator, Alert,
     AppState, AppStateStatus,
+    DeviceEventEmitter,
     RefreshControl,
     ScrollView,
     StyleSheet,
@@ -45,6 +48,8 @@ export default function BookingsScreen() {
     const [isOnline, setIsOnline] = useState(driver?.is_online ?? false);
     const [activeRide, setActiveRide] = useState<Ride | null>(null);
     const [availableRides, setAvailableRides] = useState<Ride[]>([]);
+    const [availableFoodOrders, setAvailableFoodOrders] = useState<FoodOrder[]>([]);
+    const [availableGroceryOrders, setAvailableGroceryOrders] = useState<GroceryOrder[]>([]);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [accepting, setAccepting] = useState<string | null>(null);
@@ -54,6 +59,8 @@ export default function BookingsScreen() {
     const [networkError, setNetworkError] = useState(false);
 
     const channelRef = useRef<any>(null);
+    const foodChannelRef = useRef<any>(null);
+    const groceryChannelRef = useRef<any>(null);
     const locationSubRef = useRef<any>(null);
 
     // ── Derived service types ──────────────────────────────────────────────
@@ -143,30 +150,39 @@ export default function BookingsScreen() {
         return () => { locationSubRef.current?.remove?.(); };
     }, []);
 
-    // ── Load rides + subscribe ────────────────────────────────────────────
+    // ── Load rides + food/grocery + subscribe ─────────────────────────────
     const loadData = useCallback(async () => {
         if (!driver?.id) return;
         setNetworkError(false);
         try {
-            const [active, available] = await Promise.all([
+            const [active, available, food, grocery] = await Promise.all([
                 DriverService.getActiveRide(driver.id),
                 DriverService.getAvailableRides(serviceTypes, driverLat, driverLng),
+                isBikeDriver ? FoodDriverService.getAvailableOrders(driverLat, driverLng) : Promise.resolve([]),
+                isBikeDriver ? GroceryDriverService.getAvailableOrders(driverLat, driverLng) : Promise.resolve([]),
             ]);
             setActiveRide(active);
-            if (!active) setAvailableRides(available.slice(0, 1));
+            if (!active) {
+                setAvailableRides(available.slice(0, 1));
+                setAvailableFoodOrders(food.slice(0, 1));
+                setAvailableGroceryOrders(grocery.slice(0, 1));
+            }
         } catch (e: any) {
             if (e.message === 'NETWORK_ERROR') setNetworkError(true);
         } finally {
             setLoading(false);
             setRefreshing(false);
         }
-    }, [driver?.id, serviceTypes.join(','), driverLat, driverLng]);
+    }, [driver?.id, serviceTypes.join(','), driverLat, driverLng, isBikeDriver]);
 
     useEffect(() => {
         loadData();
 
-        // Unsubscribe old channel before creating new one
+        // Unsubscribe old channels before creating new ones
         channelRef.current?.unsubscribe?.();
+        foodChannelRef.current?.unsubscribe?.();
+        groceryChannelRef.current?.unsubscribe?.();
+
         channelRef.current = DriverService.subscribeToPendingRides(
             (rides) => {
                 try {
@@ -180,8 +196,38 @@ export default function BookingsScreen() {
             driverLng
         );
 
-        return () => { channelRef.current?.unsubscribe?.(); };
-    }, [loadData, acceptBoth]);
+        if (isBikeDriver) {
+            foodChannelRef.current = FoodDriverService.subscribeToPendingOrders(
+                (orders) => {
+                    try {
+                        if (!activeRide) setAvailableFoodOrders(orders.slice(0, 1));
+                    } catch (e) {
+                        console.warn('Error updating available food:', e);
+                    }
+                },
+                driverLat,
+                driverLng
+            );
+
+            groceryChannelRef.current = GroceryDriverService.subscribeToPendingOrders(
+                (orders) => {
+                    try {
+                        if (!activeRide) setAvailableGroceryOrders(orders.slice(0, 1));
+                    } catch (e) {
+                        console.warn('Error updating available grocery:', e);
+                    }
+                },
+                driverLat,
+                driverLng
+            );
+        }
+
+        return () => {
+            channelRef.current?.unsubscribe?.();
+            foodChannelRef.current?.unsubscribe?.();
+            groceryChannelRef.current?.unsubscribe?.();
+        };
+    }, [loadData, acceptBoth, isBikeDriver]);
 
     // Subscribe to active ride changes
     useEffect(() => {
@@ -193,13 +239,52 @@ export default function BookingsScreen() {
         return () => { sub.unsubscribe?.(); };
     }, [activeRide?.id]);
 
-    // Reload when app comes back to foreground
+    // ── AppState & Widget Refresh listener ────────────────────────────────────
     useEffect(() => {
-        const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-            if (state === 'active') loadData();
+        const sub = AppState.addEventListener('change', (nextAppState) => {
+            if (nextAppState === 'active') {
+                loadData();
+            }
         });
-        return () => sub.remove();
+        
+        // Listen for manual refresh from the native floating widget
+        const refreshSub = DeviceEventEmitter.addListener('onWidgetRefresh', () => {
+            loadData();
+        });
+        
+        return () => {
+            sub.remove();
+            refreshSub.remove();
+        };
     }, [loadData]);
+
+    // ── Floating Widget Sync (Reacts to state changes) ───────────────────────
+    useEffect(() => {
+        if (!isOnline) return;
+
+        const firstAvailable = availableRides[0];
+        
+        if (activeRide) {
+            // If there's an active ride (accepted/on_ride)
+            NativeBridgeService.updateFloatingWidgetData(JSON.stringify({
+                status: 'order',
+                pickup: activeRide.pickup_address,
+                fare: `₹${activeRide.fare}`
+            }));
+        } else if (firstAvailable) {
+            // If there's a new incoming request ringing
+            NativeBridgeService.updateFloatingWidgetData(JSON.stringify({
+                status: 'order',
+                pickup: firstAvailable.pickup_address,
+                fare: `₹${firstAvailable.fare}`
+            }));
+        } else {
+            // Searching
+            NativeBridgeService.updateFloatingWidgetData(JSON.stringify({
+                status: 'searching'
+            }));
+        }
+    }, [isOnline, activeRide, availableRides]);
 
     // ── Online toggle ─────────────────────────────────────────────────────
     const toggleOnline = async (value: boolean) => {
@@ -223,7 +308,7 @@ export default function BookingsScreen() {
             if (!hasOverlayPermission) {
                 Alert.alert(
                     'Overlay Permission Required',
-                    'Quickora needs "Display over other apps" permission to alert you with new orders even when you are using other apps or when your screen is locked.',
+                    'Quickora needs "Display over other apps" permission to show you new order requests while you use other apps.',
                     [
                         { text: 'Cancel', style: 'cancel' },
                         { text: 'Enable', onPress: () => NativeBridgeService.requestDrawOverAppsPermission() }
@@ -240,6 +325,8 @@ export default function BookingsScreen() {
         // Handle Background Task ─────────
         try {
             if (value) {
+                NativeBridgeService.startFloatingWidget();
+
                 // 1. Refresh background task metadata
                 await setBackgroundTaskData(driver.id, serviceTypes);
 
@@ -261,6 +348,8 @@ export default function BookingsScreen() {
                     Alert.alert('Permission Required', 'Background location is needed to receive bookings while the app is closed.');
                 }
             } else {
+                NativeBridgeService.stopFloatingWidget();
+
                 // Stop location task
                 const isStarted = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_RIDE_TASK);
                 if (isStarted) {
@@ -293,6 +382,50 @@ export default function BookingsScreen() {
                 Alert.alert('No Internet', 'Check your connection and try again.');
             } else {
                 Alert.alert('Cannot Accept', e.message ?? 'This ride is no longer available.');
+            }
+            loadData();
+        } finally {
+            setAccepting(null);
+        }
+    };
+
+    // ── Accept Food Order ──────────────────────────────────────────────────
+    const handleAcceptFood = async (orderId: string) => {
+        if (!driver?.id) return;
+        setAccepting(orderId);
+        try {
+            const claimed = await FoodDriverService.claimOrder(orderId);
+            setAvailableFoodOrders([]);
+            if (claimed) {
+                router.push(`/active-food/${orderId}` as any);
+            }
+        } catch (e: any) {
+            if (e.message === 'NETWORK_ERROR') {
+                Alert.alert('No Internet', 'Check your connection and try again.');
+            } else {
+                Alert.alert('Cannot Accept', e.message ?? 'This food order is no longer available.');
+            }
+            loadData();
+        } finally {
+            setAccepting(null);
+        }
+    };
+
+    // ── Accept Grocery Order ───────────────────────────────────────────────
+    const handleAcceptGrocery = async (orderId: string) => {
+        if (!driver?.id) return;
+        setAccepting(orderId);
+        try {
+            const claimed = await GroceryDriverService.claimOrder(orderId);
+            setAvailableGroceryOrders([]);
+            if (claimed) {
+                router.push(`/active-grocery/${orderId}` as any);
+            }
+        } catch (e: any) {
+            if (e.message === 'NETWORK_ERROR') {
+                Alert.alert('No Internet', 'Check your connection and try again.');
+            } else {
+                Alert.alert('Cannot Accept', e.message ?? 'This grocery order is no longer available.');
             }
             loadData();
         } finally {
@@ -523,11 +656,121 @@ export default function BookingsScreen() {
                                 </View>
                             );
                         })}
+
+                        {/* Available Food Orders */}
+                        {availableFoodOrders.map((fOrder) => (
+                            <View key={fOrder.id} style={[styles.rideCard, { borderColor: '#FF6B35' }]}>
+                                <View style={styles.rideCardHeader}>
+                                    <View style={[styles.serviceTag, { backgroundColor: '#FFF7ED' }]}>
+                                        <MaterialCommunityIcons name="food-fork-drink" size={16} color="#FF6B35" />
+                                        <Text style={[styles.serviceTagLabel, { color: '#FF6B35', marginLeft: 4 }]}>Food Delivery</Text>
+                                    </View>
+                                    <Text style={[styles.rideFare, { color: '#FF6B35' }]}>₹{fOrder.delivery_fee || 35}</Text>
+                                </View>
+
+                                <View style={styles.routeSection}>
+                                    <View style={styles.routeRow}>
+                                        <View style={[styles.routeDot, { backgroundColor: '#8B5CF6' }]} />
+                                        <Text style={styles.routeAddress} numberOfLines={2}>
+                                            {fOrder.store?.name ? `${fOrder.store.name} (${fOrder.store.address})` : 'Restaurant Pickup'}
+                                        </Text>
+                                    </View>
+                                    <View style={styles.routeLine} />
+                                    <View style={styles.routeRow}>
+                                        <View style={[styles.routeDot, { backgroundColor: '#10B981' }]} />
+                                        <Text style={styles.routeAddress} numberOfLines={2}>{fOrder.delivery_address}</Text>
+                                    </View>
+                                </View>
+
+                                <View style={styles.rideStats}>
+                                    <View style={styles.stat}>
+                                        <Feather name="package" size={14} color={colors.textMuted} />
+                                        <Text style={styles.statText}>{fOrder.items?.length || 1} Items</Text>
+                                    </View>
+                                    <View style={styles.statDivider} />
+                                    <View style={styles.stat}>
+                                        <Feather name="dollar-sign" size={14} color="#FF6B35" />
+                                        <Text style={[styles.statText, { color: '#FF6B35' }]}>Direct Payout</Text>
+                                    </View>
+                                </View>
+
+                                <TouchableOpacity
+                                    style={[styles.acceptBtn, { backgroundColor: '#FF6B35' }, accepting === fOrder.id && styles.acceptBtnLoading]}
+                                    onPress={() => handleAcceptFood(fOrder.id)}
+                                    disabled={accepting !== null}
+                                    activeOpacity={0.85}
+                                >
+                                    {accepting === fOrder.id ? (
+                                        <ActivityIndicator color={colors.white} />
+                                    ) : (
+                                        <>
+                                            <Feather name="check" size={18} color={colors.white} />
+                                            <Text style={styles.acceptBtnText}>ACCEPT FOOD ORDER</Text>
+                                        </>
+                                    )}
+                                </TouchableOpacity>
+                            </View>
+                        ))}
+
+                        {/* Available Grocery Orders */}
+                        {availableGroceryOrders.map((gOrder) => (
+                            <View key={gOrder.id} style={[styles.rideCard, { borderColor: '#10B981' }]}>
+                                <View style={styles.rideCardHeader}>
+                                    <View style={[styles.serviceTag, { backgroundColor: '#ECFDF5' }]}>
+                                        <MaterialCommunityIcons name="shopping" size={16} color="#10B981" />
+                                        <Text style={[styles.serviceTagLabel, { color: '#10B981', marginLeft: 4 }]}>Grocery Delivery</Text>
+                                    </View>
+                                    <Text style={[styles.rideFare, { color: '#10B981' }]}>₹{gOrder.delivery_fee || 35}</Text>
+                                </View>
+
+                                <View style={styles.routeSection}>
+                                    <View style={styles.routeRow}>
+                                        <View style={[styles.routeDot, { backgroundColor: '#10B981' }]} />
+                                        <Text style={styles.routeAddress} numberOfLines={2}>
+                                            {gOrder.store?.name ? `${gOrder.store.name} (${gOrder.store.address})` : 'Supermarket Pickup'}
+                                        </Text>
+                                    </View>
+                                    <View style={styles.routeLine} />
+                                    <View style={styles.routeRow}>
+                                        <View style={[styles.routeDot, { backgroundColor: '#10B981' }]} />
+                                        <Text style={styles.routeAddress} numberOfLines={2}>{gOrder.delivery_address}</Text>
+                                    </View>
+                                </View>
+
+                                <View style={styles.rideStats}>
+                                    <View style={styles.stat}>
+                                        <Feather name="package" size={14} color={colors.textMuted} />
+                                        <Text style={styles.statText}>{gOrder.items?.length || 1} Packages</Text>
+                                    </View>
+                                    <View style={styles.statDivider} />
+                                    <View style={styles.stat}>
+                                        <Feather name="dollar-sign" size={14} color="#10B981" />
+                                        <Text style={[styles.statText, { color: '#10B981' }]}>Direct Payout</Text>
+                                    </View>
+                                </View>
+
+                                <TouchableOpacity
+                                    style={[styles.acceptBtn, { backgroundColor: '#10B981' }, accepting === gOrder.id && styles.acceptBtnLoading]}
+                                    onPress={() => handleAcceptGrocery(gOrder.id)}
+                                    disabled={accepting !== null}
+                                    activeOpacity={0.85}
+                                >
+                                    {accepting === gOrder.id ? (
+                                        <ActivityIndicator color={colors.white} />
+                                    ) : (
+                                        <>
+                                            <Feather name="check" size={18} color={colors.white} />
+                                            <Text style={styles.acceptBtnText}>ACCEPT GROCERY ORDER</Text>
+                                        </>
+                                    )}
+                                </TouchableOpacity>
+                            </View>
+                        ))}
                     </>
                 )}
 
-                {/* Online, no rides */}
-                {isOnline && !activeRide && availableRides.length === 0 && (
+                {/* Online, no rides or deliveries */}
+                {isOnline && !activeRide && availableRides.length === 0 && availableFoodOrders.length === 0 && availableGroceryOrders.length === 0 && (
                     <View style={styles.waitingCard}>
                         <View style={styles.waitingIcon}>
                             <Feather name="search" size={28} color={colors.primary} />
