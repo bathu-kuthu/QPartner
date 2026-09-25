@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "190824250048",
+    "project_id": "qpartner-3e88c",
+    "storage_bucket": "qpartner-3e88c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:190824250048:android:c1d8caf36a2f03e8870b25",
+        "android_client_info": {
+          "package_name": "com.quickora.qpartner"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDCPF2csxIT1nBfnF5pAOSqyf8sRWFz1qs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

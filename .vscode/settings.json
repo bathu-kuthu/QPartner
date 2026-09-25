@@ -1,0 +1,10 @@
+{
+  "editor.codeActionsOnSave": {
+    "source.fixAll": "explicit",
+    "source.organizeImports": "explicit",
+    "source.sortMembers": "explicit"
+  },
+  "deno.enablePaths": ["supabase/functions"],
+  "deno.unstable": true,
+  "deno.config": "supabase/functions/deno.json"
+}
