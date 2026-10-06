@@ -62,6 +62,13 @@ export default function BookingsScreen() {
     const foodChannelRef = useRef<any>(null);
     const groceryChannelRef = useRef<any>(null);
     const locationSubRef = useRef<any>(null);
+    const coordsRef = useRef<{ lat?: number; lng?: number }>({
+        lat: driver?.current_lat ?? undefined,
+        lng: driver?.current_lng ?? undefined,
+    });
+    const driverRef = useRef(driver);
+    driverRef.current = driver;
+    const lastLocationDbUpdateRef = useRef<number>(0);
 
     // ── Derived service types ──────────────────────────────────────────────
     const serviceTypes = getServiceTypesForDriver(
@@ -115,6 +122,7 @@ export default function BookingsScreen() {
                     const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
                     setDriverLat(pos.coords.latitude);
                     setDriverLng(pos.coords.longitude);
+                    coordsRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
                 } catch (gpsErr) {
                     // GPS not ready yet — try last known position as fallback
                     try {
@@ -122,6 +130,7 @@ export default function BookingsScreen() {
                         if (last) {
                             setDriverLat(last.coords.latitude);
                             setDriverLng(last.coords.longitude);
+                            coordsRef.current = { lat: last.coords.latitude, lng: last.coords.longitude };
                         }
                     } catch { /* silently skip */ }
                 }
@@ -132,10 +141,15 @@ export default function BookingsScreen() {
                     (loc) => {
                         setDriverLat(loc.coords.latitude);
                         setDriverLng(loc.coords.longitude);
-                        // Update in DB if online (throttled by distanceInterval)
-                        if (driver?.id && isOnline) {
+                        coordsRef.current = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+
+                        // Update in DB if online, throttled by distance (50m) and time (15s)
+                        const currentDriver = driverRef.current;
+                        const now = Date.now();
+                        if (currentDriver?.id && currentDriver?.is_online && (now - lastLocationDbUpdateRef.current > 15000)) {
+                            lastLocationDbUpdateRef.current = now;
                             DriverService.setOnlineStatus(
-                                driver.id, true,
+                                currentDriver.id, true,
                                 loc.coords.latitude,
                                 loc.coords.longitude
                             ).catch((e) => console.warn('DB location update failed:', e?.message));
@@ -155,11 +169,12 @@ export default function BookingsScreen() {
         if (!driver?.id) return;
         setNetworkError(false);
         try {
+            const currentCoords = coordsRef.current;
             const [active, available, food, grocery] = await Promise.all([
                 DriverService.getActiveRide(driver.id),
-                DriverService.getAvailableRides(serviceTypes, driverLat, driverLng),
-                isBikeDriver ? FoodDriverService.getAvailableOrders(driverLat, driverLng) : Promise.resolve([]),
-                isBikeDriver ? GroceryDriverService.getAvailableOrders(driverLat, driverLng) : Promise.resolve([]),
+                DriverService.getAvailableRides(serviceTypes, currentCoords.lat, currentCoords.lng),
+                isBikeDriver ? FoodDriverService.getAvailableOrders(currentCoords.lat, currentCoords.lng) : Promise.resolve([]),
+                isBikeDriver ? GroceryDriverService.getAvailableOrders(currentCoords.lat, currentCoords.lng) : Promise.resolve([]),
             ]);
             setActiveRide(active);
             if (!active) {
@@ -173,7 +188,7 @@ export default function BookingsScreen() {
             setLoading(false);
             setRefreshing(false);
         }
-    }, [driver?.id, serviceTypes.join(','), driverLat, driverLng, isBikeDriver]);
+    }, [driver?.id, serviceTypes.join(','), isBikeDriver]);
 
     useEffect(() => {
         loadData();
@@ -192,8 +207,7 @@ export default function BookingsScreen() {
                 }
             },
             serviceTypes,
-            driverLat,
-            driverLng
+            () => coordsRef.current
         );
 
         if (isBikeDriver) {
@@ -205,8 +219,7 @@ export default function BookingsScreen() {
                         console.warn('Error updating available food:', e);
                     }
                 },
-                driverLat,
-                driverLng
+                () => coordsRef.current
             );
 
             groceryChannelRef.current = GroceryDriverService.subscribeToPendingOrders(
@@ -217,8 +230,7 @@ export default function BookingsScreen() {
                         console.warn('Error updating available grocery:', e);
                     }
                 },
-                driverLat,
-                driverLng
+                () => coordsRef.current
             );
         }
 
@@ -227,7 +239,7 @@ export default function BookingsScreen() {
             foodChannelRef.current?.unsubscribe?.();
             groceryChannelRef.current?.unsubscribe?.();
         };
-    }, [loadData, acceptBoth, isBikeDriver]);
+    }, [loadData, isBikeDriver]);
 
     // Subscribe to active ride changes
     useEffect(() => {
@@ -394,7 +406,7 @@ export default function BookingsScreen() {
         if (!driver?.id) return;
         setAccepting(orderId);
         try {
-            const claimed = await FoodDriverService.claimOrder(orderId);
+            const claimed = await FoodDriverService.claimOrder(orderId, driver.id);
             setAvailableFoodOrders([]);
             if (claimed) {
                 router.push(`/active-food/${orderId}` as any);
@@ -416,7 +428,7 @@ export default function BookingsScreen() {
         if (!driver?.id) return;
         setAccepting(orderId);
         try {
-            const claimed = await GroceryDriverService.claimOrder(orderId);
+            const claimed = await GroceryDriverService.claimOrder(orderId, driver.id);
             setAvailableGroceryOrders([]);
             if (claimed) {
                 router.push(`/active-grocery/${orderId}` as any);

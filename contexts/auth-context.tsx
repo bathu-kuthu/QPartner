@@ -115,13 +115,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const logout = async () => {
         try {
-            // Clear FCM token first so this device stops receiving ride pushes
-            // for the session that's ending. Best-effort: don't block logout on it.
             if (driver?.id) {
+                // Set driver offline in DB so they don't appear in dispatch pool
+                try {
+                    await supabase
+                        .from('users')
+                        .update({ is_online: false })
+                        .eq('id', driver.id);
+                } catch {
+                    // Ignore offline update failure on network loss
+                }
+
+                // Clear FCM token so this device stops receiving pushes
                 const { unregisterDriverPushToken } = await import('@/services/push-token.service');
                 unregisterDriverPushToken(driver.id).catch((e) =>
                     console.warn('Failed to clear FCM token on logout:', e)
                 );
+
+                // Clear SecureStore background task keys
+                try {
+                    const SecureStore = await import('expo-secure-store');
+                    await SecureStore.deleteItemAsync('driver_id');
+                    await SecureStore.deleteItemAsync('driver_service_types');
+                } catch {
+                    // Ignore on platforms without SecureStore
+                }
             }
             await AsyncStorage.removeItem(DRIVER_STORAGE_KEY);
             setDriverState(null);

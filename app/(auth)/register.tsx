@@ -19,21 +19,26 @@ export default function RegisterScreen() {
     const { t } = useTranslation();
     const [name, setName] = useState('');
     const [loading, setLoading] = useState(false);
+    const isSubmittingRef = React.useRef(false);
 
     const handleRegister = async () => {
+        if (loading || isSubmittingRef.current) return;
         if (name.trim().length < 2) {
             Alert.alert(t('common.error'), t('common.invalidName'));
             return;
         }
+
+        isSubmittingRef.current = true;
         setLoading(true);
         try {
-            const driver = await AuthService.createDriver(phone!, name);
+            const driver = await AuthService.createDriver(phone!, name.trim());
             await setDriverData(driver as Driver);
             router.replace('/(auth)/onboarding');
         } catch (e: any) {
             Alert.alert(t('common.error'), e.message ?? t('common.error'));
         } finally {
             setLoading(false);
+            isSubmittingRef.current = false;
         }
     };
 

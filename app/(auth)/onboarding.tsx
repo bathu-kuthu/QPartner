@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-    View, Text, TouchableOpacity, StyleSheet, ScrollView,
+    View, Text, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,8 +11,6 @@ import { useTranslation } from 'react-i18next';
 
 type VehicleCategory = 'taxi' | 'logistics';
 type VehicleType = string;
-
-
 
 export default function OnboardingScreen() {
     const insets = useSafeAreaInsets();
@@ -42,6 +40,15 @@ export default function OnboardingScreen() {
             params: { category, vehicleType },
         });
     };
+
+    // If driver is already verified, prevent fallthrough to vehicle setup while root router transitions
+    if (driver?.rider_status === 'verified') {
+        return (
+            <View style={[styles.container, { paddingTop: insets.top, justifyContent: 'center', alignItems: 'center' }]}>
+                <ActivityIndicator size="large" color={colors.primary} />
+            </View>
+        );
+    }
 
     // If driver already submitted docs, show pending screen
     if (driver?.rider_status === 'pending') {

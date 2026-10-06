@@ -67,8 +67,7 @@ export class UnifiedInboxService {
                 await this.pollNextWork(driver, serviceTypes, isBike);
             },
             serviceTypes,
-            driver.current_lat,
-            driver.current_lng
+            () => ({ lat: driver.current_lat, lng: driver.current_lng })
         );
         this.channels.push(rideChannel);
 
@@ -79,8 +78,7 @@ export class UnifiedInboxService {
                     if (!this.isInitialized) return;
                     await this.pollNextWork(driver, serviceTypes, isBike);
                 },
-                driver.current_lat,
-                driver.current_lng
+                () => ({ lat: driver.current_lat, lng: driver.current_lng })
             );
             this.channels.push(foodChannel);
 
@@ -90,8 +88,7 @@ export class UnifiedInboxService {
                     if (!this.isInitialized) return;
                     await this.pollNextWork(driver, serviceTypes, isBike);
                 },
-                driver.current_lat,
-                driver.current_lng
+                () => ({ lat: driver.current_lat, lng: driver.current_lng })
             );
             this.channels.push(groceryChannel);
         }

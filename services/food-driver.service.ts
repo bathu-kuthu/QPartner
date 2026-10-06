@@ -51,17 +51,37 @@ export class FoodDriverService {
     }
 
     /**
-     * Optimistic conditional claim attempt.
-     * Transitions order from 'preparing' to 'out_for_delivery' if it has not been claimed/transitioned yet.
+     * Optimistic conditional claim attempt with driver ownership.
+     * Transitions order from 'preparing' to 'out_for_delivery' atomically.
      */
-    static async claimOrder(orderId: string): Promise<FoodOrder> {
+    static async claimOrder(orderId: string, driverId?: string): Promise<FoodOrder> {
         try {
+            // Attempt atomic RPC if driverId is provided
+            if (driverId) {
+                try {
+                    const { data: rpcData, error: rpcError } = await supabase.rpc('claim_food_order', {
+                        p_order_id: orderId,
+                        p_driver_id: driverId,
+                    });
+                    if (!rpcError && rpcData) {
+                        return rpcData as unknown as FoodOrder;
+                    }
+                } catch {
+                    // Fall back to direct conditional update if RPC is not deployed yet
+                }
+            }
+
+            const updatePayload: any = {
+                status: 'out_for_delivery',
+                updated_at: new Date().toISOString(),
+            };
+            if (driverId) {
+                updatePayload.driver_id = driverId;
+            }
+
             const { data, error } = await supabase
                 .from('orders')
-                .update({
-                    status: 'out_for_delivery',
-                    updated_at: new Date().toISOString(),
-                })
+                .update(updatePayload)
                 .eq('id', orderId)
                 .eq('status', 'preparing')
                 .select(ORDER_COLUMNS_WITH_STORE)
@@ -78,6 +98,33 @@ export class FoodDriverService {
         } catch (err: any) {
             if (err.message === 'NETWORK_ERROR') throw err;
             throw new Error(err.message || 'Order is no longer available');
+        }
+    }
+
+    /**
+     * Get active food delivery currently claimed by a driver.
+     */
+    static async getActiveFoodOrder(driverId: string): Promise<FoodOrder | null> {
+        try {
+            const { data, error } = await supabase
+                .from('orders')
+                .select(ORDER_COLUMNS_WITH_STORE)
+                .eq('store_type', 'food')
+                .eq('driver_id', driverId)
+                .eq('status', 'out_for_delivery')
+                .maybeSingle();
+
+            if (error) {
+                if (error.message?.includes('Failed to fetch') || error.message?.includes('network')) {
+                    throw new Error('NETWORK_ERROR');
+                }
+                return null;
+            }
+
+            return (data as unknown as FoodOrder) ?? null;
+        } catch (err: any) {
+            if (err.message === 'NETWORK_ERROR') throw err;
+            return null;
         }
     }
 
@@ -107,21 +154,27 @@ export class FoodDriverService {
     }
 
     /**
-     * Update food delivery status.
-     * Enforces valid status transitions: 'out_for_delivery' -> 'delivered'.
+     * Update food delivery status with optional driver ownership verification.
      */
     static async updateOrderStatus(
         orderId: string,
-        nextStatus: 'out_for_delivery' | 'delivered'
+        nextStatus: 'out_for_delivery' | 'delivered',
+        driverId?: string
     ): Promise<FoodOrder> {
         try {
-            const { data, error } = await supabase
+            let query = supabase
                 .from('orders')
                 .update({
                     status: nextStatus,
                     updated_at: new Date().toISOString(),
                 })
-                .eq('id', orderId)
+                .eq('id', orderId);
+
+            if (driverId) {
+                query = query.eq('driver_id', driverId);
+            }
+
+            const { data, error } = await query
                 .select(ORDER_COLUMNS_WITH_STORE)
                 .single();
 
@@ -140,15 +193,67 @@ export class FoodDriverService {
     }
 
     /**
-     * Fetch completed or cancelled food order history.
+     * Complete food delivery and record earnings.
      */
-    static async getOrderHistory(): Promise<FoodOrder[]> {
+    static async completeDelivery(
+        orderId: string,
+        driverId: string,
+        deliveryFee: number
+    ): Promise<FoodOrder> {
+        // Try atomic RPC first
         try {
-            const { data, error } = await supabase
+            const { error: rpcErr } = await supabase.rpc('complete_food_delivery', {
+                p_order_id: orderId,
+                p_driver_id: driverId,
+                p_earnings_amount: deliveryFee,
+            });
+            if (!rpcErr) {
+                const refreshed = await FoodDriverService.getOrderById(orderId);
+                if (refreshed) return refreshed;
+            }
+        } catch {
+            // RPC fallback
+        }
+
+        const updated = await FoodDriverService.updateOrderStatus(orderId, 'delivered', driverId);
+        try {
+            // Insert driver earnings
+            await supabase.from('driver_earnings').insert({
+                driver_id: driverId,
+                order_id: orderId,
+                amount: deliveryFee,
+                created_at: new Date().toISOString(),
+            });
+            // Increment total rides in users profile
+            const { data: userData } = await supabase.from('users').select('total_rides').eq('id', driverId).single();
+            if (userData) {
+                await supabase.from('users').update({
+                    total_rides: (userData.total_rides || 0) + 1,
+                    updated_at: new Date().toISOString(),
+                }).eq('id', driverId);
+            }
+        } catch (earningsErr) {
+            console.warn('[FoodDriverService] Failed to record earnings row:', earningsErr);
+        }
+        return updated;
+    }
+
+    /**
+     * Fetch completed or cancelled food order history, scoped by driver if provided.
+     */
+    static async getOrderHistory(driverId?: string): Promise<FoodOrder[]> {
+        try {
+            let query = supabase
                 .from('orders')
                 .select(ORDER_COLUMNS_WITH_STORE)
                 .eq('store_type', 'food')
-                .in('status', ['delivered', 'cancelled'])
+                .in('status', ['delivered', 'cancelled']);
+
+            if (driverId) {
+                query = query.eq('driver_id', driverId);
+            }
+
+            const { data, error } = await query
                 .order('created_at', { ascending: false })
                 .limit(50);
 
@@ -164,7 +269,7 @@ export class FoodDriverService {
      */
     static subscribeToPendingOrders(
         onUpdate: (orders: FoodOrder[]) => void,
-        driverLat?: number,
+        driverLatOrGetter?: number | (() => { lat?: number; lng?: number } | undefined),
         driverLng?: number
     ) {
         const instanceId = Math.random().toString(36).slice(2, 9);
@@ -180,7 +285,19 @@ export class FoodDriverService {
                 },
                 async () => {
                     try {
-                        const orders = await FoodDriverService.getAvailableOrders(driverLat, driverLng);
+                        let lat: number | undefined;
+                        let lng: number | undefined;
+
+                        if (typeof driverLatOrGetter === 'function') {
+                            const resolved = driverLatOrGetter();
+                            lat = resolved?.lat;
+                            lng = resolved?.lng;
+                        } else {
+                            lat = driverLatOrGetter;
+                            lng = driverLng;
+                        }
+
+                        const orders = await FoodDriverService.getAvailableOrders(lat, lng);
                         onUpdate(orders);
                     } catch (e) {
                         console.warn('[FoodDriverService] Realtime update error:', e);

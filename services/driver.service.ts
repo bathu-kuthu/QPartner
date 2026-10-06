@@ -131,21 +131,6 @@ export class DriverService {
         status: 'picked_up' | 'on_ride' | 'completed' | 'cancelled',
         cancelReason?: string
     ): Promise<void> {
-        const update: any = { status, updated_at: new Date().toISOString() };
-        if (cancelReason) update.cancel_reason = cancelReason;
-
-        const { error } = await supabase
-            .from('rides')
-            .update(update)
-            .eq('id', rideId);
-
-        if (error) {
-            if (error.message?.includes('Failed to fetch') || error.message?.includes('network')) {
-                throw new Error('NETWORK_ERROR');
-            }
-            throw new Error('Failed to update ride status');
-        }
-
         if (status === 'completed') {
             const { data: ride, error: rideError } = await supabase
                 .from('rides')
@@ -170,13 +155,28 @@ export class DriverService {
                 }
             }
         }
+
+        const update: any = { status, updated_at: new Date().toISOString() };
+        if (cancelReason) update.cancel_reason = cancelReason;
+
+        const { error } = await supabase
+            .from('rides')
+            .update(update)
+            .eq('id', rideId);
+
+        if (error) {
+            if (error.message?.includes('Failed to fetch') || error.message?.includes('network')) {
+                throw new Error('NETWORK_ERROR');
+            }
+            throw new Error('Failed to update ride status');
+        }
     }
 
     // ── Realtime: pending rides ──────────────────────────────────────────────
     static subscribeToPendingRides(
         callback: (rides: Ride[]) => void,
         serviceTypes: string[],
-        driverLat?: number,
+        driverLatOrGetter?: number | (() => { lat?: number; lng?: number } | undefined),
         driverLng?: number
     ) {
         const channelName = `pending_rides_${Date.now()}`;
@@ -187,7 +187,19 @@ export class DriverService {
                 { event: '*', schema: 'public', table: 'rides', filter: 'status=eq.pending' },
                 async () => {
                     try {
-                        const rides = await DriverService.getAvailableRides(serviceTypes, driverLat, driverLng);
+                        let lat: number | undefined;
+                        let lng: number | undefined;
+
+                        if (typeof driverLatOrGetter === 'function') {
+                            const resolved = driverLatOrGetter();
+                            lat = resolved?.lat;
+                            lng = resolved?.lng;
+                        } else {
+                            lat = driverLatOrGetter;
+                            lng = driverLng;
+                        }
+
+                        const rides = await DriverService.getAvailableRides(serviceTypes, lat, lng);
                         callback(rides);
                     } catch {
                         // ignore realtime fetch errors silently

@@ -41,30 +41,26 @@ function RootContent() {
     const [incomingRide, setIncomingRide] = useState<any>(null);
     const [incomingOrder, setIncomingOrder] = useState<{ domain: 'food' | 'grocery'; order: FoodOrder | GroceryOrder } | null>(null);
     const rootNavState = useRootNavigationState();
-    const hasRouted = useRef(false); // Prevent re-routing after initial navigation
+    // Track the last routed (driverId + rider_status) tuple to allow legitimate status transitions
+    // (e.g. pending -> verified, login/logout) while blocking redundant reroutes from GPS / is_online updates.
+    const lastRoutedKeyRef = useRef<string | null>(null);
 
     useEffect(() => {
         // Wait until navigation is fully mounted and ready before attempting to route
         if (!rootNavState?.key) return;
         if (loading) return;
 
-        // CRITICAL: After initial routing is done, do NOT re-route on subsequent
-        // driver object changes (e.g., location updates, is_online toggles from
-        // Supabase realtime). This was causing the app to yank the driver off
-        // the active-ride screen every time the driver row was updated.
-        if (hasRouted.current) return;
+        const currentRouteKey = `${driver?.id ?? 'anon'}:${driver?.rider_status ?? 'none'}:${driver?.is_driver ?? 'false'}`;
+        if (lastRoutedKeyRef.current === currentRouteKey) return;
+        lastRoutedKeyRef.current = currentRouteKey;
 
         if (!driver) {
-            hasRouted.current = true;
             setTimeout(() => router.replace('/(auth)/login'), 0);
         } else if (!driver.is_driver || driver.rider_status === 'unsubmitted') {
-            hasRouted.current = true;
             setTimeout(() => router.replace('/(auth)/onboarding'), 0);
         } else if (driver.rider_status === 'pending' || driver.rider_status === 'rejected') {
-            hasRouted.current = true;
             setTimeout(() => router.replace('/(auth)/onboarding'), 0);
         } else if (driver.rider_status === 'verified') {
-            hasRouted.current = true;
             // Async check for required permissions before going to bookings
             (async () => {
                 try {
@@ -87,7 +83,23 @@ function RootContent() {
                     } else {
                         // Register FCM push token so Edge Function can notify this device
                         registerDriverPushToken(driver.id).catch(console.warn);
-                        setTimeout(() => router.replace('/(tabs)/bookings'), 0);
+
+                        // Check for in-progress active work across all 3 verticals
+                        const [activeRide, activeFood, activeGrocery] = await Promise.all([
+                            DriverService.getActiveRide(driver.id).catch(() => null),
+                            FoodDriverService.getActiveFoodOrder(driver.id).catch(() => null),
+                            GroceryDriverService.getActiveGroceryOrder(driver.id).catch(() => null),
+                        ]);
+
+                        if (activeRide) {
+                            setTimeout(() => router.replace(`/active-ride/${activeRide.id}` as any), 0);
+                        } else if (activeFood) {
+                            setTimeout(() => router.replace(`/active-food/${activeFood.id}` as any), 0);
+                        } else if (activeGrocery) {
+                            setTimeout(() => router.replace(`/active-grocery/${activeGrocery.id}` as any), 0);
+                        } else {
+                            setTimeout(() => router.replace('/(tabs)/bookings'), 0);
+                        }
                     }
                 } catch (e) {
                     // Fallback
@@ -95,20 +107,22 @@ function RootContent() {
                 }
             })();
         } else {
-            hasRouted.current = true;
             setTimeout(() => router.replace('/(auth)/onboarding'), 0);
         }
     }, [driver, loading, rootNavState?.key]);
 
-    // Handle Realtime pending rides globally when online ───
+    // Handle Realtime pending rides & orders globally when online ───
     useEffect(() => {
         if (!driver?.id || !driver.is_online) {
             setIncomingRide(null);
+            setIncomingOrder(null);
             return;
         }
 
         let isMounted = true;
-        let channel: any = null;
+        let rideChannel: any = null;
+        let foodChannel: any = null;
+        let groceryChannel: any = null;
 
         const initRealtime = async () => {
             try {
@@ -122,81 +136,94 @@ function RootContent() {
                     // AsyncStorage failure is non-critical, continue with default
                 }
 
+                const isBike = driver.vehicle_type === 'bike';
                 const serviceTypes = getServiceTypesForDriver(
                     driver.vehicle_category ?? 'taxi',
                     driver.vehicle_type ?? 'bike',
                     acceptBoth
                 );
 
-                // Get driver coordinates — safely, without crashing on permission denial
-                let lat = driver.current_lat;
-                let lng = driver.current_lng;
-                try {
-                    const { status } = await Location.getForegroundPermissionsAsync();
-                    if (status === 'granted') {
-                        const loc = await Location.getLastKnownPositionAsync();
-                        if (loc) {
-                            lat = loc.coords.latitude;
-                            lng = loc.coords.longitude;
-                        }
-                    }
-                } catch (locErr) {
-                    // Location unavailable — fallback to last known DB coords stored in driver profile
-                    console.warn('Location not available, using cached driver coords:', locErr);
-                }
-
                 if (!isMounted) return;
 
-                channel = DriverService.subscribeToPendingRides(
+                // 1. Transport Realtime Channel
+                rideChannel = DriverService.subscribeToPendingRides(
                     async () => {
                         if (!isMounted) return;
                         try {
-                            // 1. Get fresh location when an event happens
-                            let currentLat = driver.current_lat;
-                            let currentLng = driver.current_lng;
+                            // Check if driver has an active ride (guard against network errors)
+                            let activeRide = null;
                             try {
-                                const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-                                currentLat = pos.coords.latitude;
-                                currentLng = pos.coords.longitude;
-                            } catch {
-                                try {
-                                    const last = await Location.getLastKnownPositionAsync();
-                                    if (last) {
-                                        currentLat = last.coords.latitude;
-                                        currentLng = last.coords.longitude;
-                                    }
-                                } catch { /* ignore */ }
+                                activeRide = await DriverService.getActiveRide(driver.id);
+                            } catch (activeErr: any) {
+                                if (activeErr?.message === 'NETWORK_ERROR') return;
+                            }
+                            if (activeRide) {
+                                setIncomingRide(null);
+                                return;
                             }
 
-                            // 2. Fetch available rides using fresh location
-                            const rides = await DriverService.getAvailableRides(serviceTypes, currentLat, currentLng);
-
-                            if (rides && rides.length > 0) {
-                                // Check if driver has an active ride (guard against network errors)
-                                let activeRide = null;
-                                try {
-                                    activeRide = await DriverService.getActiveRide(driver.id);
-                                } catch (activeErr: any) {
-                                    if (activeErr?.message === 'NETWORK_ERROR') {
-                                        console.warn('Network error checking active ride — skipping ride alert');
-                                        return;
-                                    }
-                                }
-                                if (!activeRide && isMounted) {
-                                    setIncomingRide(rides[0]);
-                                }
-                            } else {
+                            const rides = await DriverService.getAvailableRides(serviceTypes, driver.current_lat, driver.current_lng);
+                            if (rides && rides.length > 0 && isMounted) {
+                                setIncomingRide(rides[0]);
+                            } else if (isMounted) {
                                 setIncomingRide(null);
                             }
                         } catch (rideErr) {
-                            console.warn('Error processing incoming rides:', rideErr);
+                            console.warn('[Layout] Error processing incoming rides:', rideErr);
                         }
                     },
-                    [] // We pass empty array for serviceTypes because we do the fetch manually above
+                    serviceTypes,
+                    () => ({ lat: driver.current_lat, lng: driver.current_lng })
                 );
+
+                // 2. Food & Grocery Realtime Channels for bike partners
+                if (isBike) {
+                    foodChannel = FoodDriverService.subscribeToPendingOrders(
+                        async (orders) => {
+                            if (!isMounted) return;
+                            try {
+                                let activeRide = await DriverService.getActiveRide(driver.id);
+                                let activeFood = await FoodDriverService.getActiveFoodOrder(driver.id);
+                                if (activeRide || activeFood) {
+                                    setIncomingOrder(null);
+                                    return;
+                                }
+                                if (orders && orders.length > 0 && isMounted) {
+                                    setIncomingOrder({ domain: 'food', order: orders[0] });
+                                } else if (isMounted) {
+                                    setIncomingOrder(null);
+                                }
+                            } catch (err) {
+                                console.warn('[Layout] Error processing incoming food orders:', err);
+                            }
+                        },
+                        () => ({ lat: driver.current_lat, lng: driver.current_lng })
+                    );
+
+                    groceryChannel = GroceryDriverService.subscribeToPendingOrders(
+                        async (orders) => {
+                            if (!isMounted) return;
+                            try {
+                                let activeRide = await DriverService.getActiveRide(driver.id);
+                                let activeGrocery = await GroceryDriverService.getActiveGroceryOrder(driver.id);
+                                if (activeRide || activeGrocery) {
+                                    setIncomingOrder(null);
+                                    return;
+                                }
+                                if (orders && orders.length > 0 && isMounted) {
+                                    setIncomingOrder({ domain: 'grocery', order: orders[0] });
+                                } else if (isMounted) {
+                                    setIncomingOrder(null);
+                                }
+                            } catch (err) {
+                                console.warn('[Layout] Error processing incoming grocery orders:', err);
+                            }
+                        },
+                        () => ({ lat: driver.current_lat, lng: driver.current_lng })
+                    );
+                }
             } catch (err: any) {
-                // Only log as warning — never crash the app due to realtime init failure
-                console.warn('Realtime bookings init failed (will retry on next toggle):', err?.message ?? err);
+                console.warn('Realtime bookings init failed:', err?.message ?? err);
             }
         };
 
@@ -204,9 +231,11 @@ function RootContent() {
 
         return () => {
             isMounted = false;
-            channel?.unsubscribe?.();
+            rideChannel?.unsubscribe?.();
+            foodChannel?.unsubscribe?.();
+            groceryChannel?.unsubscribe?.();
         };
-    }, [driver?.id, driver?.is_online]);
+    }, [driver?.id, driver?.is_online, driver?.vehicle_type]);
 
     // Handle Notification Actions and Foreground Reception ───
     useEffect(() => {
@@ -335,13 +364,13 @@ function RootContent() {
         NotificationEngine.stop();
         try {
             if (domain === 'food') {
-                const claimed = await FoodDriverService.claimOrder(orderId);
+                const claimed = await FoodDriverService.claimOrder(orderId, driver.id);
                 setIncomingOrder(null);
                 if (claimed) {
                     router.push(`/active-food/${orderId}` as any);
                 }
             } else {
-                const claimed = await GroceryDriverService.claimOrder(orderId);
+                const claimed = await GroceryDriverService.claimOrder(orderId, driver.id);
                 setIncomingOrder(null);
                 if (claimed) {
                     router.push(`/active-grocery/${orderId}` as any);
@@ -395,6 +424,8 @@ function RootContent() {
     );
 }
 
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+
 export default function RootLayout() {
     const [loaded, error] = useFonts({
         'Satoshi-Regular': require('../assets/fonts/Satoshi-Regular.otf'),
@@ -405,16 +436,22 @@ export default function RootLayout() {
 
     useEffect(() => {
         if (loaded || error) SplashScreen.hideAsync();
-        if (loaded) NotificationService.init(); // Boot engine
+        if (loaded) {
+            NotificationService.init(); // Boot engine
+            const { OfflineQueueService } = require('@/services/offline-queue.service');
+            OfflineQueueService.init(); // Boot offline retry engine
+        }
     }, [loaded, error]);
 
     if (!loaded && !error) return null;
 
     return (
         <SafeAreaProvider>
-            <AuthProvider>
-                <RootContent />
-            </AuthProvider>
+            <ErrorBoundary>
+                <AuthProvider>
+                    <RootContent />
+                </AuthProvider>
+            </ErrorBoundary>
         </SafeAreaProvider>
     );
 }
