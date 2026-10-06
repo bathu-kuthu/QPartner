@@ -44,8 +44,8 @@ export default function HistoryScreen() {
         try {
             const [rides, foodOrders, groceryOrders] = await Promise.all([
                 DriverService.getRideHistory(driver.id),
-                FoodDriverService.getOrderHistory(),
-                GroceryDriverService.getOrderHistory(),
+                FoodDriverService.getOrderHistory(driver.id),
+                GroceryDriverService.getOrderHistory(driver.id),
             ]);
 
             const combined: UnifiedHistoryItem[] = [

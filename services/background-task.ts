@@ -1,6 +1,22 @@
 import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
-import * as TaskManager from 'expo-task-manager';
+
+let TaskManager: typeof import('expo-task-manager') | null = null;
+try {
+    TaskManager = require('expo-task-manager');
+} catch {
+    TaskManager = null;
+}
+
+function safeDefineTask(taskName: string, taskExecutor: (body: any) => Promise<void>) {
+    try {
+        if (TaskManager && typeof TaskManager.defineTask === 'function') {
+            TaskManager.defineTask(taskName, taskExecutor);
+        }
+    } catch (err) {
+        console.warn(`[TaskManager] Could not define task ${taskName}:`, err);
+    }
+}
 
 /**
  * BACKGROUND_NOTIFICATION_TASK
@@ -41,7 +57,7 @@ export async function setBackgroundTaskData(driverId: string, serviceTypes: stri
 
 // ─── Background Notification Task ─────────────────────────────────────────────
 // This fires when a FCM notification/data message arrives while app is background/killed
-TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }: any) => {
+safeDefineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }: any) => {
     if (error) {
         console.error('[BG Task] Background notification task error:', error);
         return;
@@ -132,7 +148,7 @@ TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }: any
 
 // ─── Background Location Task (Polling for widget sync) ───────────────────────
 // Runs every 5 seconds when the driver is online and app is in background.
-TaskManager.defineTask(BACKGROUND_RIDE_TASK, async ({ data, error }: any) => {
+safeDefineTask(BACKGROUND_RIDE_TASK, async ({ data, error }: any) => {
     if (error) {
         console.error('[BG Location Task] Error:', error);
         return;

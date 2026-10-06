@@ -208,6 +208,8 @@ export interface OrderItem {
 export interface FoodOrder {
     id: string;
     user_id: string;
+    driver_id?: string | null;
+    delivery_otp?: string | null;
     store_id: string;
     store_type: 'food';
     items: OrderItem[];
@@ -238,6 +240,8 @@ export interface FoodOrder {
 export interface GroceryOrder {
     id: string;
     user_id: string;
+    driver_id?: string | null;
+    delivery_otp?: string | null;
     store_id: string;
     store_type: 'grocery';
     items: OrderItem[];

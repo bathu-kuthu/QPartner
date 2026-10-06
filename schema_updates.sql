@@ -41,10 +41,18 @@ GRANT SELECT (
   drop_address, 
   distance_km, 
   fare, 
+  base_fare,
+  distance_fare,
+  waiting_charge,
   status, 
   driver_id, 
   details, 
   is_reviewed, 
+  cancel_reason,
+  sender_phone,
+  receiver_phone,
+  is_multi_stop,
+  stop_count,
   created_at, 
   updated_at
 ) ON public.rides TO anon, authenticated;
@@ -155,22 +163,127 @@ GRANT ALL ON public.otp TO anon, authenticated, service_role;
 -- =========================================================================
 -- 6. ADD FCM PUSH TOKEN COLUMN TO USERS TABLE
 -- =========================================================================
--- Stores the device FCM token so the Edge Function can send push notifications
--- to a specific driver's device.
--- Run this in the Supabase SQL Editor.
-
 ALTER TABLE public.users
     ADD COLUMN IF NOT EXISTS fcm_token text;
 
--- Optional index for quick lookup by token (e.g., to find which driver owns a token)
 CREATE INDEX IF NOT EXISTS idx_users_fcm_token ON public.users (fcm_token)
     WHERE fcm_token IS NOT NULL;
 
--- Allow authenticated drivers to update their own fcm_token
--- (RLS policy — only updates rows where auth.uid() = id)
-CREATE POLICY IF NOT EXISTS "Driver can update own fcm_token"
-    ON public.users
-    FOR UPDATE
-    TO authenticated
-    USING (auth.uid() = id)
-    WITH CHECK (auth.uid() = id);
+-- =========================================================================
+-- 7. ADD DRIVER OWNERSHIP TO ORDERS (FOOD & GROCERY)
+-- =========================================================================
+ALTER TABLE public.orders
+    ADD COLUMN IF NOT EXISTS driver_id uuid REFERENCES public.users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS delivery_otp text;
+
+CREATE INDEX IF NOT EXISTS idx_orders_driver_id ON public.orders (driver_id)
+    WHERE driver_id IS NOT NULL;
+
+-- =========================================================================
+-- 8. ATOMIC FOOD & GROCERY ORDER CLAIM RPCs (FOR UPDATE SKIP LOCKED)
+-- =========================================================================
+CREATE OR REPLACE FUNCTION claim_food_order(p_order_id uuid, p_driver_id uuid)
+RETURNS jsonb AS $$
+DECLARE
+  v_order RECORD;
+BEGIN
+  SELECT * INTO v_order
+  FROM public.orders
+  WHERE id = p_order_id
+    AND store_type = 'food'
+    AND status = 'preparing'
+    AND driver_id IS NULL
+  FOR UPDATE SKIP LOCKED;
+
+  IF v_order IS NULL THEN
+    RAISE EXCEPTION 'Order is no longer available';
+  END IF;
+
+  UPDATE public.orders
+  SET driver_id = p_driver_id,
+      status = 'out_for_delivery',
+      updated_at = NOW()
+  WHERE id = p_order_id
+  RETURNING * INTO v_order;
+
+  RETURN to_jsonb(v_order);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION claim_grocery_order(p_order_id uuid, p_driver_id uuid)
+RETURNS jsonb AS $$
+DECLARE
+  v_order RECORD;
+BEGIN
+  SELECT * INTO v_order
+  FROM public.orders
+  WHERE id = p_order_id
+    AND store_type = 'grocery'
+    AND status = 'preparing'
+    AND driver_id IS NULL
+  FOR UPDATE SKIP LOCKED;
+
+  IF v_order IS NULL THEN
+    RAISE EXCEPTION 'Order is no longer available';
+  END IF;
+
+  UPDATE public.orders
+  SET driver_id = p_driver_id,
+      status = 'out_for_delivery',
+      updated_at = NOW()
+  WHERE id = p_order_id
+  RETURNING * INTO v_order;
+
+  RETURN to_jsonb(v_order);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- =========================================================================
+-- 9. ATOMIC FOOD & GROCERY COMPLETION + EARNINGS RPCs
+-- =========================================================================
+CREATE OR REPLACE FUNCTION complete_food_delivery(
+  p_order_id uuid,
+  p_driver_id uuid,
+  p_earnings_amount numeric
+)
+RETURNS void AS $$
+BEGIN
+  UPDATE public.orders
+  SET status = 'delivered',
+      updated_at = NOW()
+  WHERE id = p_order_id
+    AND driver_id = p_driver_id;
+
+  INSERT INTO public.driver_earnings (driver_id, order_id, amount, created_at)
+  VALUES (p_driver_id, p_order_id, p_earnings_amount, NOW());
+
+  UPDATE public.users
+  SET total_rides = COALESCE(total_rides, 0) + 1,
+      updated_at = NOW()
+  WHERE id = p_driver_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION complete_grocery_delivery(
+  p_order_id uuid,
+  p_driver_id uuid,
+  p_earnings_amount numeric
+)
+RETURNS void AS $$
+BEGIN
+  UPDATE public.orders
+  SET status = 'delivered',
+      updated_at = NOW()
+  WHERE id = p_order_id
+    AND driver_id = p_driver_id;
+
+  INSERT INTO public.driver_earnings (driver_id, order_id, amount, created_at)
+  VALUES (p_driver_id, p_order_id, p_earnings_amount, NOW());
+
+  UPDATE public.users
+  SET total_rides = COALESCE(total_rides, 0) + 1,
+      updated_at = NOW()
+  WHERE id = p_driver_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+

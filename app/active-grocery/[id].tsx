@@ -153,9 +153,10 @@ export default function ActiveGroceryDeliveryScreen() {
                     text: 'Confirm Handover',
                     style: 'default',
                     onPress: async () => {
+                        if (!driver?.id) return;
                         setUpdating(true);
                         try {
-                            const updated = await GroceryDriverService.updateOrderStatus(order.id, 'delivered');
+                            const updated = await GroceryDriverService.completeDelivery(order.id, driver.id, order.delivery_fee || 35);
                             setOrder(updated);
                             if (driver) {
                                 await setDriverData({ ...driver, total_rides: (driver.total_rides ?? 0) + 1 });

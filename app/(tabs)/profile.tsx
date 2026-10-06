@@ -32,7 +32,21 @@ export default function ProfileScreen() {
         t('support.reason_other')
     ];
 
-    const handleHelpAction = (reason: string) => {
+    const handleCallSupport = async (phone: string = '9715749855') => {
+        const url = `tel:${phone}`;
+        try {
+            const canOpen = await Linking.canOpenURL(url);
+            if (canOpen) {
+                await Linking.openURL(url);
+            } else {
+                Alert.alert(t('support.title') || 'Support', `Call support at: ${phone}`);
+            }
+        } catch {
+            Alert.alert(t('support.title') || 'Support', `Call support at: ${phone}`);
+        }
+    };
+
+    const handleHelpAction = async (reason: string) => {
         setReasonModal(false);
         setHelpModal(false);
 
@@ -44,9 +58,16 @@ export default function ProfileScreen() {
         const phoneNo = '9715749855';
         const url = Platform.OS === 'ios' ? `sms:${phoneNo}&body=${encodeURIComponent(bodyText)}` : `sms:${phoneNo}?body=${encodeURIComponent(bodyText)}`;
         
-        Linking.openURL(url).catch(() => {
-            Alert.alert(t('common.error'), 'Could not open SMS app');
-        });
+        try {
+            const canOpen = await Linking.canOpenURL(url);
+            if (canOpen) {
+                await Linking.openURL(url);
+            } else {
+                Alert.alert(t('support.title') || 'Support', `Please SMS Support at ${phoneNo} regarding: ${reason}`);
+            }
+        } catch {
+            Alert.alert(t('support.title') || 'Support', `Please SMS Support at ${phoneNo} regarding: ${reason}`);
+        }
     };
 
     const loadEarnings = useCallback(async () => {
@@ -265,7 +286,7 @@ export default function ProfileScreen() {
                 <View style={styles.modalOverlay}>
                     <View style={styles.modalContent}>
                         <Text style={styles.modalTitle}>{t('support.title') || 'Help & Support'}</Text>
-                        <TouchableOpacity style={styles.supportOption} onPress={() => Linking.openURL('tel:9715749855')}>
+                        <TouchableOpacity style={styles.supportOption} onPress={() => handleCallSupport('9715749855')}>
                             <View style={[styles.supportIconBox, { backgroundColor: colors.success + '15' }]}>
                                 <Feather name="phone-call" size={20} color={colors.success} />
                             </View>
