@@ -41,62 +41,41 @@ function RootContent() {
     const [incomingRide, setIncomingRide] = useState<any>(null);
     const [incomingOrder, setIncomingOrder] = useState<{ domain: 'food' | 'grocery'; order: FoodOrder | GroceryOrder } | null>(null);
     const rootNavState = useRootNavigationState();
-    const hasRouted = useRef(false); // Prevent re-routing after initial navigation
+    const lastRiderStatusRef = useRef<string | null>(null);
+    const lastDriverIdRef = useRef<string | null>(null);
 
     useEffect(() => {
         // Wait until navigation is fully mounted and ready before attempting to route
         if (!rootNavState?.key) return;
         if (loading) return;
 
-        // CRITICAL: After initial routing is done, do NOT re-route on subsequent
-        // driver object changes (e.g., location updates, is_online toggles from
-        // Supabase realtime). This was causing the app to yank the driver off
-        // the active-ride screen every time the driver row was updated.
-        if (hasRouted.current) return;
+        const currentDriverId = driver?.id ?? null;
+        const currentStatus = driver?.rider_status ?? null;
+
+        // CRITICAL: After initial routing is done, do NOT re-route on routine
+        // driver object changes (location updates, is_online toggles, rating, etc.).
+        // Only re-route when the authenticated driver ID changes or the verification rider_status changes.
+        if (
+            lastDriverIdRef.current === currentDriverId &&
+            lastRiderStatusRef.current === currentStatus
+        ) {
+            return;
+        }
+
+        lastDriverIdRef.current = currentDriverId;
+        lastRiderStatusRef.current = currentStatus;
 
         if (!driver) {
-            hasRouted.current = true;
-            setTimeout(() => router.replace('/(auth)/login'), 0);
+            setTimeout(() => router.replace('/login'), 0);
         } else if (!driver.is_driver || driver.rider_status === 'unsubmitted') {
-            hasRouted.current = true;
-            setTimeout(() => router.replace('/(auth)/onboarding'), 0);
+            setTimeout(() => router.replace('/onboarding'), 0);
         } else if (driver.rider_status === 'pending' || driver.rider_status === 'rejected') {
-            hasRouted.current = true;
-            setTimeout(() => router.replace('/(auth)/onboarding'), 0);
+            setTimeout(() => router.replace('/onboarding'), 0);
         } else if (driver.rider_status === 'verified') {
-            hasRouted.current = true;
-            // Async check for required permissions before going to bookings
-            (async () => {
-                try {
-                    const fg = await Location.getForegroundPermissionsAsync();
-                    const bg = await Location.getBackgroundPermissionsAsync();
-                    const notif = await import('expo-notifications').then(n => n.getPermissionsAsync());
-                    let overlay = true;
-                    if (Platform.OS === 'android') {
-                        const { NativeBridgeService } = await import('@/services/native-bridge.service');
-                        overlay = await NativeBridgeService.checkDrawOverAppsPermission();
-                    }
-
-                    if (
-                        fg.status !== 'granted' ||
-                        bg.status !== 'granted' ||
-                        notif.status !== 'granted' ||
-                        !overlay
-                    ) {
-                        setTimeout(() => router.replace('/(auth)/permissions'), 0);
-                    } else {
-                        // Register FCM push token so Edge Function can notify this device
-                        registerDriverPushToken(driver.id).catch(console.warn);
-                        setTimeout(() => router.replace('/(tabs)/bookings'), 0);
-                    }
-                } catch (e) {
-                    // Fallback
-                    setTimeout(() => router.replace('/(tabs)/bookings'), 0);
-                }
-            })();
+            registerDriverPushToken(driver.id).catch(console.warn);
+            setTimeout(() => router.replace('/(tabs)/bookings'), 0);
         } else {
-            hasRouted.current = true;
-            setTimeout(() => router.replace('/(auth)/onboarding'), 0);
+            setTimeout(() => router.replace('/onboarding'), 0);
         }
     }, [driver, loading, rootNavState?.key]);
 

@@ -21,13 +21,14 @@ export default function RegisterScreen() {
     const [loading, setLoading] = useState(false);
 
     const handleRegister = async () => {
-        if (name.trim().length < 2) {
-            Alert.alert(t('common.error'), t('common.invalidName'));
+        const trimmedName = name.trim();
+        if (!trimmedName || !/^[A-Za-z\s]+$/.test(trimmedName)) {
+            Alert.alert(t('common.error'), 'Please enter a valid full name using alphabets only.');
             return;
         }
         setLoading(true);
         try {
-            const driver = await AuthService.createDriver(phone!, name);
+            const driver = await AuthService.createDriver(phone!, trimmedName);
             await setDriverData(driver as Driver);
             router.replace('/(auth)/onboarding');
         } catch (e: any) {

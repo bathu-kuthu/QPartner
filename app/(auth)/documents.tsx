@@ -1,18 +1,25 @@
-import React, { useState } from 'react';
-import {
-    View, Text, TouchableOpacity, StyleSheet, ScrollView,
-    TextInput, Alert, ActivityIndicator, Image,
-} from 'react-native';
-import { router, useLocalSearchParams } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import ImageEditorModal from '@/components/ImageEditorModal';
+import { supabase } from '@/config/supabase';
+import { colors, Fonts } from '@/constants/colors';
+import { useAuth } from '@/contexts/auth-context';
+import { AuthService } from '@/services/auth.service';
 import { Feather } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { colors, Fonts } from '@/constants/colors';
-import { AuthService } from '@/services/auth.service';
-import { useAuth } from '@/contexts/auth-context';
-import { supabase } from '@/config/supabase';
+import { router, useLocalSearchParams } from 'expo-router';
+import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-
+import {
+    ActivityIndicator,
+    Alert,
+    Image,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 interface DocField {
     key: string;
     label: string;
@@ -62,6 +69,10 @@ export default function DocumentsScreen() {
     const [uploading, setUploading] = useState<string | null>(null);
     const [submitting, setSubmitting] = useState(false);
 
+    // Crop state
+    const [cropDocKey, setCropDocKey] = useState<string | null>(null);
+    const [cropImageUri, setCropImageUri] = useState<string | null>(null);
+
     const pickAndUpload = async (docKey: string) => {
         const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (!permission.granted) {
@@ -71,37 +82,102 @@ export default function DocumentsScreen() {
 
         const result = await ImagePicker.launchImageLibraryAsync({
             mediaTypes: ImagePicker.MediaTypeOptions.Images,
-            quality: 0.7,
-            allowsEditing: true,
+            quality: 1,
+            allowsEditing: false, // DO NOT use native crop, use ImageEditorModal
         });
 
-        if (result.canceled || !result.assets[0]) return;
+        if (result.canceled || !result.assets || !result.assets[0] || !result.assets[0].uri) return;
 
         const asset = result.assets[0];
+
+        if (typeof asset.uri !== 'string') {
+            Alert.alert(t('common.error'), 'Selected image is missing a valid URI.');
+            return;
+        }
+
+        const ext = asset.uri.split('.').pop()?.toLowerCase();
+        if (ext !== 'jpg' && ext !== 'jpeg' && ext !== 'png') {
+            Alert.alert(t('common.error'), 'Only JPG and PNG images are supported.');
+            return;
+        }
+
+        // Initial size validation
+        if (asset.fileSize && asset.fileSize > 2 * 1024 * 1024) {
+            Alert.alert(t('common.error'), 'Image size must not exceed 2 MB.');
+            return;
+        }
+
+        setCropDocKey(docKey);
+        setCropImageUri(asset.uri);
+    };
+
+    const handleCropApply = async (docKey: string, uri: string, size: number) => {
+        setCropImageUri(null);
+        setCropDocKey(null);
+
+        if (!uri || typeof uri !== 'string') {
+            Alert.alert(t('common.error'), 'Cropped image is missing a valid URI.');
+            return;
+        }
+
+        if (size > 2 * 1024 * 1024) {
+            Alert.alert(t('common.error'), 'Cropped image size must not exceed 2 MB.');
+            return;
+        }
+
         setUploading(docKey);
 
         try {
             const driverId = driver?.id ?? 'unknown';
-            const ext = asset.uri.split('.').pop() ?? 'jpg';
+            const ext = uri.split('.').pop()?.toLowerCase() || 'jpg';
+            const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
             const fileName = `${driverId}/${docKey}_${Date.now()}.${ext}`;
 
-            const response = await fetch(asset.uri);
-            const blob = await response.blob();
+            // Diagnostic: Check if we actually have an active Supabase session
+            const { data: sessionData } = await supabase.auth.getSession();
+            const session = sessionData?.session;
+            const uid = session?.user?.id;
+            console.log(`[Diagnostic] Uploading file to path: ${fileName}`);
+            console.log(`[Diagnostic] Supabase Auth Session active: ${!!session}`);
+            console.log(`[Diagnostic] Supabase auth.uid(): ${uid || 'null'}`);
+            console.log(`[Diagnostic] Driver ID from context: ${driverId}`);
+
+            console.log(`[Upload] Starting upload for ${docKey} (Type: ${mimeType}, Size: ${size} bytes)`);
+
+            // Use FormData for React Native instead of raw Blob to prevent Network request failed
+            const formData = new FormData();
+            formData.append('file', {
+                uri,
+                name: fileName,
+                type: mimeType,
+            } as any);
 
             const { error } = await supabase.storage
                 .from('driver-documents')
-                .upload(fileName, blob, { contentType: asset.mimeType ?? 'image/jpeg', upsert: true });
+                .upload(fileName, formData, { upsert: true });
 
             if (error) {
-                // Fallback: use local URI for demo
-                setDocs(prev => ({ ...prev, [docKey]: asset.uri }));
-            } else {
-                const { data: urlData } = supabase.storage.from('driver-documents').getPublicUrl(fileName);
-                setDocs(prev => ({ ...prev, [docKey]: urlData.publicUrl }));
+                console.error("[Upload] Error during Supabase upload:");
+                console.error(`- message: ${error.message}`);
+                console.error(`- name: ${error.name}`);
+                console.error(`- stack: ${error.stack}`);
+                Alert.alert(t('common.error'), 'Failed to upload document: ' + error.message);
+                return;
             }
-        } catch {
-            // Demo fallback — store local URI
-            setDocs(prev => ({ ...prev, [docKey]: asset.uri }));
+
+            const { data: urlData, error: urlError } = await supabase.storage.from('driver-documents').createSignedUrl(fileName, 60 * 60 * 24 * 365); // 1 year
+
+            if (urlError || !urlData) {
+                console.error("Signed URL error:", urlError);
+                Alert.alert(t('common.error'), 'Failed to generate secure document URL.');
+                return;
+            }
+
+            setDocs(prev => ({ ...prev, [docKey]: urlData.signedUrl }));
+            console.log(`[Upload] Successfully uploaded and generated Signed URL for ${docKey}`);
+        } catch (e: any) {
+            console.error("[Upload] Exception during file processing/upload:", e);
+            Alert.alert(t('common.error'), e.message || 'An unexpected error occurred during upload.');
         } finally {
             setUploading(null);
         }
@@ -117,9 +193,42 @@ export default function DocumentsScreen() {
         return true;
     };
 
+    const validateForm = (): string | null => {
+        if (!name.trim()) return 'Full Name is required.';
+        if (!/^[a-zA-Z\s.']{2,}$/.test(name.trim())) return 'Please enter a valid Name (letters and spaces only).';
+        if (!docs.avatar) return 'Profile Photo is required.';
+        if (!vehicleNumber.trim()) return 'Vehicle Registration Number is required.';
+
+        // Indian Vehicle Number format: e.g. MH 01 AB 1234 or MH01AB1234
+        if (!/^[A-Z]{2}[0-9]{1,2}[A-Z]{1,3}[0-9]{4}$/i.test(vehicleNumber.trim().replace(/[\s-]/g, ''))) {
+            return 'Please enter a valid Vehicle Registration Number.';
+        }
+
+        for (const field of DOC_FIELDS) {
+            if (!docs[field.key]) return `${field.label} image is required.`;
+            const val = docs[field.numberKey]?.trim();
+            if (!val) return `${field.numberLabel} is required.`;
+
+            if (field.numberKey === 'aadhaar_number' && !/^\d{12}$/.test(val.replace(/\s/g, ''))) {
+                return 'Aadhaar Number must be exactly 12 digits.';
+            }
+            if (field.numberKey === 'pan_number' && !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/i.test(val)) {
+                return 'Please enter a valid PAN Number (e.g., ABCDE1234F).';
+            }
+            if (field.numberKey === 'license_number') {
+                // Generic Indian DL regex: State code + 2 digits + Year + 7 digits
+                if (!/^[A-Z]{2}[0-9]{2}[0-9]{4}[0-9]{7}$/i.test(val.replace(/[\s-]/g, ''))) {
+                    return 'Please enter a valid Driving Licence Number (e.g., MH0120110012345).';
+                }
+            }
+        }
+        return null;
+    };
+
     const handleSubmit = async () => {
-        if (!isComplete()) {
-            Alert.alert(t('common.error'), t('documents.incomplete'));
+        const errorMsg = validateForm();
+        if (errorMsg) {
+            Alert.alert(t('common.error'), errorMsg);
             return;
         }
         if (!driver?.id) return;
@@ -143,9 +252,8 @@ export default function DocumentsScreen() {
             if (isFromProfile) {
                 Alert.alert(t('common.success') || 'Success', t('documents.updateSuccess') || 'Documents updated successfully!');
                 router.back();
-            } else {
-                router.replace('/(auth)/onboarding');
             }
+            // If onboarding, do nothing. _layout.tsx will automatically detect rider_status change and route appropriately.
         } catch (e: any) {
             Alert.alert(t('common.error'), e.message ?? t('common.error'));
         } finally {
@@ -173,8 +281,8 @@ export default function DocumentsScreen() {
                 </View>
 
                 <View style={styles.avatarContainer}>
-                    <TouchableOpacity 
-                        style={styles.avatarUpload} 
+                    <TouchableOpacity
+                        style={styles.avatarUpload}
                         onPress={() => pickAndUpload('avatar')}
                         disabled={uploading === 'avatar' || (isFromProfile && !!driver?.avatar)}
                         activeOpacity={0.8}
@@ -294,6 +402,21 @@ export default function DocumentsScreen() {
 
                 <View style={{ height: 40 }} />
             </ScrollView>
+
+            {/* Image Editor Modal for Cropping */}
+            <ImageEditorModal
+                visible={!!cropImageUri && !!cropDocKey}
+                imageUri={cropImageUri || ''}
+                onCancel={() => {
+                    setCropImageUri(null);
+                    setCropDocKey(null);
+                }}
+                onApply={(uri, size) => {
+                    if (cropDocKey) {
+                        handleCropApply(cropDocKey, uri, size);
+                    }
+                }}
+            />
         </View>
     );
 }

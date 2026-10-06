@@ -46,8 +46,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                     filter: `id=eq.${driver.id}`,
                 },
                 async (payload) => {
-                    const updated = payload.new as Driver;
-                    await setDriverData(updated);
+                    try {
+                        const { data, error } = await supabase
+                            .from('users')
+                            .select('*')
+                            .eq('id', driver.id)
+                            .single();
+
+                        if (data && !error) {
+                            await setDriverData(data as Driver);
+                        } else if (payload.new) {
+                            await setDriverData({ ...driver, ...payload.new } as Driver);
+                        }
+                    } catch (e) {
+                        console.error('Failed to update driver from realtime event:', e);
+                        if (payload.new) {
+                            await setDriverData({ ...driver, ...payload.new } as Driver);
+                        }
+                    }
                 }
             )
             .subscribe();

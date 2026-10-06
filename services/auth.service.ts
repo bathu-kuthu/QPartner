@@ -43,46 +43,40 @@ export class AuthService {
 
     static async verifyOTP(phone: string, otp: string): Promise<Driver | null> {
         try {
-            const { data: otpData, error: otpError } = await supabase
-                .from('otp')
-                .select('*')
-                .eq('phone', phone)
-                .eq('otp', otp)
-                .single();
-
-            if (otpError || !otpData) {
-                throw new Error('Invalid or expired OTP');
+            // 1. Get an Anonymous Session (Requires Anonymous Sign-ins enabled in Supabase Auth)
+            const { data: authData, error: authError } = await supabase.auth.signInAnonymously();
+            
+            if (authError || !authData?.user) {
+                console.error('Anonymous Auth Error:', authError);
+                throw new Error('Failed to create secure session. Ensure Anonymous Sign-ins are enabled in Supabase.');
             }
 
-            if (new Date(otpData.expires_at) < new Date()) {
-                throw new Error('OTP has expired');
+            // 2. Call the secure RPC to verify OTP and link the anonymous auth_id
+            const { data: userData, error: rpcError } = await supabase.rpc('secure_driver_login', {
+                p_phone: phone,
+                p_otp: otp,
+                p_auth_id: authData.user.id
+            });
+
+            if (rpcError) {
+                console.error('RPC Verification Error:', rpcError);
+                // Map known errors
+                if (rpcError.message.includes('Invalid or expired OTP')) {
+                    throw new Error('Invalid or expired OTP');
+                }
+                throw new Error('Verification failed.');
             }
+
+            return userData as Driver;
         } catch (err: any) {
-            if (err.message === 'OTP has expired') {
-                throw err;
-            }
-            throw new Error('Invalid or expired OTP');
-        }
-
-        try {
-            const { data: userData, error: userError } = await supabase
-                .from('users')
-                .select('*')
-                .eq('phone', phone)
-                .eq('is_driver', true)
-                .single();
-
-            if (userError && userError.code !== 'PGRST116') {
-                return null;
-            }
-
-            return userData as Driver ?? null;
-        } catch {
-            return null;
+            throw new Error(err.message || 'Invalid or expired OTP');
         }
     }
 
     static async createDriver(phone: string, name: string): Promise<Driver> {
+        const { data: authData } = await supabase.auth.getSession();
+        const authId = authData?.session?.user?.id;
+
         const { data, error } = await supabase
             .from('users')
             .insert([{
@@ -94,6 +88,7 @@ export class AuthService {
                 rating: 5.0,
                 total_rides: 0,
                 total_spent: 0,
+                auth_id: authId,
             }])
             .select()
             .single();

@@ -35,7 +35,7 @@ export default function LoginScreen() {
         setLoading(true);
         try {
             await AuthService.sendOTP(formattedPhone);
-            router.push({ pathname: '/(auth)/otp', params: { phone: formattedPhone } });
+            router.push(`/otp?phone=${encodeURIComponent(formattedPhone)}`);
         } catch (e: any) {
             Alert.alert(t('common.error'), e.message ?? t('common.error'));
         } finally {

@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
-    View, Text, TouchableOpacity, StyleSheet, ScrollView,
+    View, Text, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -12,14 +12,40 @@ import { useTranslation } from 'react-i18next';
 type VehicleCategory = 'taxi' | 'logistics';
 type VehicleType = string;
 
-
-
 export default function OnboardingScreen() {
     const insets = useSafeAreaInsets();
-    const { driver } = useAuth();
+    const { driver, refreshDriver } = useAuth();
     const { t } = useTranslation();
     const [category, setCategory] = useState<VehicleCategory | null>(null);
     const [vehicleType, setVehicleType] = useState<VehicleType | null>(null);
+    const [checkingStatus, setCheckingStatus] = useState(false);
+
+    // Auto-navigate to dashboard when driver status is verified
+    useEffect(() => {
+        if (driver?.rider_status === 'verified') {
+            router.replace('/(tabs)/bookings');
+        }
+    }, [driver?.rider_status]);
+
+    // Safety net: periodically check backend status while pending in case Realtime disconnects
+    useEffect(() => {
+        if (driver?.rider_status !== 'pending') return;
+
+        const interval = setInterval(() => {
+            refreshDriver();
+        }, 3000);
+
+        return () => clearInterval(interval);
+    }, [driver?.rider_status, refreshDriver]);
+
+    const handleCheckStatus = async () => {
+        setCheckingStatus(true);
+        try {
+            await refreshDriver();
+        } finally {
+            setCheckingStatus(false);
+        }
+    };
 
     const TAXI_VEHICLES = [
         { id: 'bike', label: t('onboarding.vehicles.bike'), icon: '🏍️', desc: t('onboarding.vehicles.bikeDesc') },
@@ -37,11 +63,17 @@ export default function OnboardingScreen() {
 
     const handleContinue = () => {
         if (!category || !vehicleType) return;
-        router.push({
-            pathname: '/(auth)/documents',
-            params: { category, vehicleType },
-        });
+        router.push(`/documents?category=${category}&vehicleType=${vehicleType}`);
     };
+
+    // If driver is verified, show loading indicator while redirecting
+    if (driver?.rider_status === 'verified') {
+        return (
+            <View style={[styles.container, { paddingTop: insets.top, justifyContent: 'center', alignItems: 'center' }]}>
+                <ActivityIndicator size="large" color={colors.primary} />
+            </View>
+        );
+    }
 
     // If driver already submitted docs, show pending screen
     if (driver?.rider_status === 'pending') {
@@ -63,6 +95,21 @@ export default function OnboardingScreen() {
                             </View>
                         ))}
                     </View>
+                    <TouchableOpacity
+                        style={styles.checkStatusBtn}
+                        onPress={handleCheckStatus}
+                        disabled={checkingStatus}
+                        activeOpacity={0.8}
+                    >
+                        {checkingStatus ? (
+                            <ActivityIndicator size="small" color={colors.primary} />
+                        ) : (
+                            <>
+                                <Feather name="refresh-cw" size={16} color={colors.primary} />
+                                <Text style={styles.checkStatusText}>{t('common.refresh') || 'Check Status'}</Text>
+                            </>
+                        )}
+                    </TouchableOpacity>
                 </View>
             </View>
         );
@@ -81,7 +128,7 @@ export default function OnboardingScreen() {
                     </Text>
                     <TouchableOpacity
                         style={styles.resubmitBtn}
-                        onPress={() => router.push('/(auth)/documents')}
+                        onPress={() => router.push('/documents')}
                     >
                         <Text style={styles.resubmitText}>{t('onboarding.resubmit')}</Text>
                     </TouchableOpacity>
@@ -228,4 +275,10 @@ const styles = StyleSheet.create({
         backgroundColor: colors.primary, borderRadius: 14, paddingVertical: 14, paddingHorizontal: 32,
     },
     resubmitText: { fontFamily: Fonts.bold, fontSize: 15, color: colors.white },
+    checkStatusBtn: {
+        flexDirection: 'row', alignItems: 'center', gap: 8,
+        marginTop: 28, paddingVertical: 12, paddingHorizontal: 24,
+        borderRadius: 12, backgroundColor: colors.primaryLight,
+    },
+    checkStatusText: { fontFamily: Fonts.bold, fontSize: 14, color: colors.primary },
 });

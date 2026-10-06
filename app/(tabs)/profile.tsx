@@ -109,7 +109,7 @@ export default function ProfileScreen() {
             label: t('profile.myDocs'),
             subtitle: `Status: ${driver?.rider_status === 'verified' ? t('profile.statusVerified') : driver?.rider_status ?? '—'}`,
             color: colors.primary,
-            onPress: () => router.push('/(auth)/documents'),
+            onPress: () => router.push('/documents'),
         },
         {
             icon: 'help-circle' as const,

@@ -53,14 +53,14 @@ export default function OTPScreen() {
             if (driver) {
                 // Existing driver
                 await setDriverData(driver);
-                if (driver.rider_status === 'unsubmitted') {
-                    router.replace('/(auth)/onboarding');
-                } else {
+                if (driver.rider_status === 'verified') {
                     router.replace('/(tabs)/bookings');
+                } else {
+                    router.replace('/(auth)/onboarding');
                 }
             } else {
                 // New driver — go to register
-                router.push({ pathname: '/(auth)/register', params: { phone } });
+                router.push(`/register?phone=${encodeURIComponent(phone)}`);
             }
         } catch (e: any) {
             Alert.alert(t('common.error'), e.message ?? t('common.error'));
