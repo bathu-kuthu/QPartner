@@ -28,7 +28,7 @@ import { GlobalRideAlertModal } from '@/components/GlobalRideAlertModal';
 import { GlobalOrderAlertModal } from '@/components/GlobalOrderAlertModal';
 import { GlobalStatusBanner } from '@/components/GlobalStatusBanner';
 import { supabase } from '@/config/supabase';
-import { getServiceTypesForDriver } from '@/services/driver.service';
+import { getServiceTypesForDriver, RIDE_COLUMNS } from '@/services/driver.service';
 import { FoodDriverService } from '@/services/food-driver.service';
 import { GroceryDriverService } from '@/services/grocery-driver.service';
 import { registerDriverPushToken } from '@/services/push-token.service';
@@ -136,10 +136,10 @@ function RootContent() {
                     // AsyncStorage failure is non-critical, continue with default
                 }
 
-                const isBike = driver.vehicle_type === 'bike';
+                const isBike = driver.vehicle_type === 'bike' || driver.vehicle_category === 'bike';
                 const serviceTypes = getServiceTypesForDriver(
-                    driver.vehicle_category ?? 'taxi',
-                    driver.vehicle_type ?? 'bike',
+                    driver.vehicle_category,
+                    driver.vehicle_type,
                     acceptBoth
                 );
 
@@ -235,7 +235,7 @@ function RootContent() {
             foodChannel?.unsubscribe?.();
             groceryChannel?.unsubscribe?.();
         };
-    }, [driver?.id, driver?.is_online, driver?.vehicle_type]);
+    }, [driver?.id, driver?.is_online, driver?.vehicle_type, driver?.vehicle_category]);
 
     // Handle Notification Actions and Foreground Reception ───
     useEffect(() => {
@@ -275,7 +275,7 @@ function RootContent() {
                     try {
                         const { data: ride } = await supabase
                             .from('rides')
-                            .select('*')
+                            .select(RIDE_COLUMNS)
                             .eq('id', rideId)
                             .eq('status', 'pending')
                             .is('driver_id', null)
@@ -308,7 +308,7 @@ function RootContent() {
                         if (!activeRide) {
                             const { data: ride } = await supabase
                                 .from('rides')
-                                .select('*')
+                                .select(RIDE_COLUMNS)
                                 .eq('id', data.rideId)
                                 .single();
                             if (ride && ride.status === 'pending' && isMounted) {

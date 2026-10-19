@@ -3,26 +3,50 @@ import { Ride, DriverEarning, Notification, Review, RideStop, SosAlert, DriverPl
 
 // ─── Service type mapping ────────────────────────────────────────────────────
 export function getServiceTypesForDriver(
-    category: 'taxi' | 'logistics',
-    vehicleType: string,
+    category?: string | null,
+    vehicleType?: string | null,
     acceptBoth: boolean = false
 ): string[] {
-    if (category === 'taxi') {
-        if (vehicleType === 'bike') {
-            const base = ['taxi_bike', 'bike_taxi'];
-            return acceptBoth ? [...base, 'log_bike'] : base;
+    const cat = category?.toLowerCase()?.trim();
+    const vType = vehicleType?.toLowerCase()?.trim();
+
+    // 1. Explicit Bike category or vehicle_type 'bike'
+    if (cat === 'bike' || vType === 'bike') {
+        const taxiBike = ['taxi_bike', 'bike_taxi', 'bike'];
+        const logBike = ['log_bike', 'parcel'];
+
+        if (cat === 'bike') {
+            return [...taxiBike, ...logBike];
         }
-        if (vehicleType === 'auto') return ['taxi_auto'];
-        if (vehicleType === 'cab') return ['taxi_car'];
-    }
-    if (category === 'logistics') {
-        if (vehicleType === 'bike') {
-            const base = ['log_bike'];
-            return acceptBoth ? [...base, 'taxi_bike', 'bike_taxi'] : base;
+        if (cat === 'logistics') {
+            return acceptBoth ? [...logBike, ...taxiBike] : logBike;
         }
-        if (vehicleType === 'mini_truck') return ['log_mini_truck'];
-        if (vehicleType === 'truck') return ['log_truck'];
+        // Default to taxi bike
+        return acceptBoth ? [...taxiBike, ...logBike] : taxiBike;
     }
+
+    // 2. Taxi category
+    if (cat === 'taxi') {
+        if (vType === 'auto') return ['taxi_auto', 'auto'];
+        if (vType === 'cab' || vType === 'car') return ['taxi_car', 'cab', 'car', 'taxi'];
+    }
+
+    // 3. Logistics category
+    if (cat === 'logistics') {
+        if (vType === 'mini_truck' || vType === 'mini_van') {
+            return ['log_mini_truck', 'mini_truck', 'mini_van', 'log_truck'];
+        }
+        if (vType === 'truck') {
+            return ['log_truck', 'truck'];
+        }
+    }
+
+    // 4. Fallback based purely on vehicleType if category was unspecified, 'all', or mismatched
+    if (vType === 'auto') return ['taxi_auto', 'auto'];
+    if (vType === 'cab' || vType === 'car') return ['taxi_car', 'cab', 'car', 'taxi'];
+    if (vType === 'mini_truck' || vType === 'mini_van') return ['log_mini_truck', 'mini_truck', 'mini_van', 'log_truck'];
+    if (vType === 'truck') return ['log_truck', 'truck'];
+
     return [];
 }
 
@@ -40,8 +64,8 @@ export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: numb
 }
 
 // ─── Rides SELECT columns ────────────────────────────────────────────────────
-const RIDE_COLUMNS = 'id, user_id, service_type, pickup_location, drop_location, pickup_address, drop_address, distance_km, fare, base_fare, distance_fare, waiting_charge, status, driver_id, details, is_reviewed, cancel_reason, sender_phone, receiver_phone, is_multi_stop, stop_count, created_at, updated_at';
-const RIDE_COLUMNS_WITH_USER = `${RIDE_COLUMNS}, user:users!user_id(phone, name)`;
+export const RIDE_COLUMNS = 'id, user_id, service_type, pickup_location, drop_location, pickup_address, drop_address, distance_km, fare, base_fare, distance_fare, waiting_charge, status, driver_id, details, is_reviewed, cancel_reason, sender_phone, receiver_phone, is_multi_stop, stop_count, created_at, updated_at';
+export const RIDE_COLUMNS_WITH_USER = `${RIDE_COLUMNS}, user:users!user_id(phone, name)`;
 
 export class DriverService {
     // ── Fetch available rides, filtered & sorted by proximity ────────────────
@@ -53,6 +77,10 @@ export class DriverService {
         try {
             if (serviceTypes.length === 0) return [];
 
+            if (__DEV__) {
+                console.log('[DriverService] getAvailableRides() querying for serviceTypes:', serviceTypes);
+            }
+
             const { data, error } = await supabase
                 .from('rides')
                 .select(RIDE_COLUMNS)
@@ -62,6 +90,9 @@ export class DriverService {
                 .order('created_at', { ascending: false });
 
             if (error) {
+                if (__DEV__) {
+                    console.warn('[DriverService] Supabase error in getAvailableRides():', error.message);
+                }
                 if (error.message?.includes('Failed to fetch') || error.message?.includes('network')) {
                     throw new Error('NETWORK_ERROR');
                 }
@@ -69,6 +100,9 @@ export class DriverService {
             }
 
             const rawRides = (data ?? []) as Ride[];
+            if (__DEV__) {
+                console.log(`[DriverService] Fetched ${rawRides.length} available pending rides from DB.`);
+            }
 
             if (driverLat == null || driverLng == null) return rawRides;
             
@@ -180,12 +214,18 @@ export class DriverService {
         driverLng?: number
     ) {
         const channelName = `pending_rides_${Date.now()}`;
+        if (__DEV__) {
+            console.log(`[DriverService] Subscribing to realtime pending rides (channel: ${channelName})`);
+        }
         return supabase
             .channel(channelName)
             .on(
                 'postgres_changes',
-                { event: '*', schema: 'public', table: 'rides', filter: 'status=eq.pending' },
-                async () => {
+                { event: '*', schema: 'public', table: 'rides' },
+                async (payload) => {
+                    if (__DEV__) {
+                        console.log('[DriverService] Realtime pending ride event received:', payload.eventType);
+                    }
                     try {
                         let lat: number | undefined;
                         let lng: number | undefined;
@@ -206,7 +246,11 @@ export class DriverService {
                     }
                 }
             )
-            .subscribe();
+            .subscribe((status) => {
+                if (__DEV__) {
+                    console.log(`[DriverService] Pending rides Realtime status: ${status}`);
+                }
+            });
     }
 
     // ── Realtime: specific ride ──────────────────────────────────────────────

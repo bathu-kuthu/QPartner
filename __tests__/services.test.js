@@ -15,21 +15,21 @@ function haversineKm(lat1, lng1, lat2, lng2) {
 
 // ─── Service type mapping ────────────────────────────────────────────────────
 function getServiceTypesForDriver(category, vehicleType, acceptBoth = false) {
+    const vType = vehicleType?.toLowerCase()?.trim();
     if (category === 'taxi') {
-        if (vehicleType === 'bike') {
+        if (vType === 'bike') {
             const base = ['taxi_bike', 'bike_taxi'];
-            return acceptBoth ? [...base, 'log_bike'] : base;
+            return acceptBoth ? [...base, 'log_bike', 'parcel'] : base;
         }
-        if (vehicleType === 'auto') return ['taxi_auto'];
-        if (vehicleType === 'cab') return ['taxi_car'];
+        if (vType === 'auto') return ['taxi_auto'];
+        if (vType === 'cab' || vType === 'car') return ['taxi_car'];
     }
     if (category === 'logistics') {
-        if (vehicleType === 'bike') {
-            const base = ['log_bike'];
+        if (vType === 'bike') {
+            const base = ['log_bike', 'parcel'];
             return acceptBoth ? [...base, 'taxi_bike', 'bike_taxi'] : base;
         }
-        if (vehicleType === 'mini_truck') return ['log_mini_truck'];
-        if (vehicleType === 'truck') return ['log_truck'];
+        if (vType === 'mini_truck' || vType === 'truck') return ['log_truck'];
     }
     return [];
 }
@@ -43,15 +43,15 @@ assert.deepStrictEqual(taxiBike, ['taxi_bike', 'bike_taxi'], 'Taxi bike default 
 
 // Taxi Bike - Cross-category (acceptBoth = true)
 const taxiBikeCross = getServiceTypesForDriver('taxi', 'bike', true);
-assert.deepStrictEqual(taxiBikeCross, ['taxi_bike', 'bike_taxi', 'log_bike'], 'Taxi bike cross-category mapping mismatch');
+assert.deepStrictEqual(taxiBikeCross, ['taxi_bike', 'bike_taxi', 'log_bike', 'parcel'], 'Taxi bike cross-category mapping mismatch');
 
 // Logistics Bike - Default
 const logBike = getServiceTypesForDriver('logistics', 'bike', false);
-assert.deepStrictEqual(logBike, ['log_bike'], 'Logistics bike default mapping mismatch');
+assert.deepStrictEqual(logBike, ['log_bike', 'parcel'], 'Logistics bike default mapping mismatch');
 
 // Logistics Bike - Cross-category (acceptBoth = true)
 const logBikeCross = getServiceTypesForDriver('logistics', 'bike', true);
-assert.deepStrictEqual(logBikeCross, ['log_bike', 'taxi_bike', 'bike_taxi'], 'Logistics bike cross-category mapping mismatch');
+assert.deepStrictEqual(logBikeCross, ['log_bike', 'parcel', 'taxi_bike', 'bike_taxi'], 'Logistics bike cross-category mapping mismatch');
 
 // Auto & Cab
 const auto = getServiceTypesForDriver('taxi', 'auto', false);
@@ -60,9 +60,15 @@ assert.deepStrictEqual(auto, ['taxi_auto'], 'Auto mapping mismatch');
 const cab = getServiceTypesForDriver('taxi', 'cab', false);
 assert.deepStrictEqual(cab, ['taxi_car'], 'Cab mapping mismatch');
 
+const car = getServiceTypesForDriver('taxi', 'car', false);
+assert.deepStrictEqual(car, ['taxi_car'], 'Car mapping mismatch');
+
+const cabUpper = getServiceTypesForDriver('taxi', 'CAB', false);
+assert.deepStrictEqual(cabUpper, ['taxi_car'], 'Upper case CAB mapping mismatch');
+
 // Mini Truck & Truck
 const miniTruck = getServiceTypesForDriver('logistics', 'mini_truck', false);
-assert.deepStrictEqual(miniTruck, ['log_mini_truck'], 'Mini truck mapping mismatch');
+assert.deepStrictEqual(miniTruck, ['log_truck'], 'Mini truck mapping mismatch');
 
 const truck = getServiceTypesForDriver('logistics', 'truck', false);
 assert.deepStrictEqual(truck, ['log_truck'], 'Truck mapping mismatch');

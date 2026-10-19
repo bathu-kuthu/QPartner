@@ -29,16 +29,59 @@ interface DocField {
 }
 
 
-
 export default function DocumentsScreen() {
     const insets = useSafeAreaInsets();
-    const { category, vehicleType } = useLocalSearchParams<{ category: string; vehicleType: string }>();
+    const { category, vehicleType, serviceCategory } = useLocalSearchParams<{ category: string; vehicleType: string; serviceCategory?: string }>();
     const { driver, refreshDriver } = useAuth();
     const { t } = useTranslation();
 
     const isFromProfile = !category;
     const currentCategory = category || driver?.vehicle_category || 'taxi';
     const currentType = vehicleType || driver?.vehicle_type || 'bike';
+
+    const getVehicleMeta = () => {
+        const cat = (serviceCategory || category || driver?.vehicle_category || '').toLowerCase();
+        const type = (vehicleType || driver?.vehicle_type || '').toLowerCase();
+
+        if (cat === 'bike' || type === 'bike') {
+            return { icon: '🏍️', color: '#FF6B35' };
+        }
+        if (type === 'auto') {
+            return { icon: '🛺', color: '#2196F3' };
+        }
+        if (type === 'cab') {
+            return { icon: '🚗', color: '#4CAF50' };
+        }
+        if (type === 'mini_truck') {
+            return { icon: '🛻', color: '#9C27B0' };
+        }
+        if (type === 'truck') {
+            return { icon: '🚚', color: '#795548' };
+        }
+        if (cat === 'taxi') {
+            return { icon: '🚖', color: '#2196F3' };
+        }
+        return { icon: '📦', color: '#FF9800' };
+    };
+
+    const getVehicleDisplay = () => {
+        const cat = (serviceCategory || category || driver?.vehicle_category || '').toLowerCase();
+        const type = (vehicleType || driver?.vehicle_type || '').toLowerCase();
+
+        if (cat === 'bike' || type === 'bike') {
+            return 'BIKE';
+        }
+
+        if (cat === 'taxi') {
+            if (type === 'auto') return 'TAXI → AUTO';
+            if (type === 'cab') return 'TAXI → CAB';
+            return `TAXI → ${type.toUpperCase()}`;
+        }
+
+        return `${currentCategory.charAt(0).toUpperCase()}${currentCategory.slice(1)} · ${currentType.toUpperCase()}`;
+    };
+
+    const vehicleMeta = getVehicleMeta();
 
     const hasMissingDocs = isFromProfile && (
         !driver?.name ||
@@ -74,41 +117,46 @@ export default function DocumentsScreen() {
     const [cropImageUri, setCropImageUri] = useState<string | null>(null);
 
     const pickAndUpload = async (docKey: string) => {
-        const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        if (!permission.granted) {
-            Alert.alert(t('common.error'), t('documents.permissionNeeded'));
-            return;
+        try {
+            const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+            if (!permission.granted) {
+                Alert.alert(t('common.error'), t('documents.permissionNeeded'));
+                return;
+            }
+
+            const result = await ImagePicker.launchImageLibraryAsync({
+                mediaTypes: ['images'],
+                quality: 1,
+                allowsEditing: false, // DO NOT use native crop, use ImageEditorModal
+            });
+
+            if (result.canceled || !result.assets || !result.assets[0] || !result.assets[0].uri) return;
+
+            const asset = result.assets[0];
+
+            if (typeof asset.uri !== 'string') {
+                Alert.alert(t('common.error'), 'Selected image is missing a valid URI.');
+                return;
+            }
+
+            const ext = asset.uri.split('.').pop()?.toLowerCase();
+            if (ext !== 'jpg' && ext !== 'jpeg' && ext !== 'png') {
+                Alert.alert(t('common.error'), 'Only JPG and PNG images are supported.');
+                return;
+            }
+
+            // Initial size validation
+            if (asset.fileSize && asset.fileSize > 2 * 1024 * 1024) {
+                Alert.alert(t('common.error'), 'Image size must not exceed 2 MB.');
+                return;
+            }
+
+            setCropDocKey(docKey);
+            setCropImageUri(asset.uri);
+        } catch (e: any) {
+            console.error('[PickImage] Error launching image picker:', e);
+            Alert.alert(t('common.error'), e.message || 'Failed to select image.');
         }
-
-        const result = await ImagePicker.launchImageLibraryAsync({
-            mediaTypes: ImagePicker.MediaTypeOptions.Images,
-            quality: 1,
-            allowsEditing: false, // DO NOT use native crop, use ImageEditorModal
-        });
-
-        if (result.canceled || !result.assets || !result.assets[0] || !result.assets[0].uri) return;
-
-        const asset = result.assets[0];
-
-        if (typeof asset.uri !== 'string') {
-            Alert.alert(t('common.error'), 'Selected image is missing a valid URI.');
-            return;
-        }
-
-        const ext = asset.uri.split('.').pop()?.toLowerCase();
-        if (ext !== 'jpg' && ext !== 'jpeg' && ext !== 'png') {
-            Alert.alert(t('common.error'), 'Only JPG and PNG images are supported.');
-            return;
-        }
-
-        // Initial size validation
-        if (asset.fileSize && asset.fileSize > 2 * 1024 * 1024) {
-            Alert.alert(t('common.error'), 'Image size must not exceed 2 MB.');
-            return;
-        }
-
-        setCropDocKey(docKey);
-        setCropImageUri(asset.uri);
     };
 
     const handleCropApply = async (docKey: string, uri: string, size: number) => {
@@ -133,16 +181,7 @@ export default function DocumentsScreen() {
             const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
             const fileName = `${driverId}/${docKey}_${Date.now()}.${ext}`;
 
-            // Diagnostic: Check if we actually have an active Supabase session
-            const { data: sessionData } = await supabase.auth.getSession();
-            const session = sessionData?.session;
-            const uid = session?.user?.id;
-            console.log(`[Diagnostic] Uploading file to path: ${fileName}`);
-            console.log(`[Diagnostic] Supabase Auth Session active: ${!!session}`);
-            console.log(`[Diagnostic] Supabase auth.uid(): ${uid || 'null'}`);
-            console.log(`[Diagnostic] Driver ID from context: ${driverId}`);
-
-            console.log(`[Upload] Starting upload for ${docKey} (Type: ${mimeType}, Size: ${size} bytes)`);
+            console.log(`[Upload] Uploading ${docKey} for driver ${driverId} (${mimeType}, ${size} bytes)`);
 
             // Use FormData for React Native instead of raw Blob to prevent Network request failed
             const formData = new FormData();
@@ -274,9 +313,13 @@ export default function DocumentsScreen() {
 
             <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
                 {/* Vehicle info */}
+                <Text style={styles.sectionLabel}>{t('onboarding.vehicleType') || 'Vehicle Type'}</Text>
                 <View style={styles.vehicleBadge}>
+                    <Text style={[styles.vehicleBadgeIcon, { color: vehicleMeta.color }]}>
+                        {vehicleMeta.icon}
+                    </Text>
                     <Text style={styles.vehicleBadgeText}>
-                        {currentCategory === 'taxi' ? '🚖' : '📦'} {currentCategory.charAt(0).toUpperCase()}{currentCategory.slice(1)} · {currentType.toUpperCase()}
+                        {getVehicleDisplay()}
                     </Text>
                 </View>
 
@@ -428,10 +471,12 @@ const styles = StyleSheet.create({
     headerTitle: { fontFamily: Fonts.bold, fontSize: 17, color: colors.text },
     scroll: { paddingHorizontal: 20, paddingTop: 8 },
     vehicleBadge: {
+        flexDirection: 'row', alignItems: 'center', gap: 6,
         alignSelf: 'flex-start', backgroundColor: colors.primaryLight,
         borderRadius: 20, paddingHorizontal: 14, paddingVertical: 6, marginBottom: 20,
     },
-    vehicleBadgeText: { fontFamily: Fonts.medium, fontSize: 13, color: colors.primary },
+    vehicleBadgeIcon: { fontSize: 14 },
+    vehicleBadgeText: { fontFamily: Fonts.bold, fontSize: 13, color: colors.primary },
     avatarContainer: { alignItems: 'center', marginBottom: 24, marginTop: 10 },
     avatarUpload: { width: 90, height: 90, borderRadius: 45, backgroundColor: colors.surface, borderWidth: 2, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', overflow: 'visible' },
     avatarImage: { width: '100%', height: '100%', borderRadius: 45 },

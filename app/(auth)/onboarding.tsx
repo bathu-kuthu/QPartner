@@ -9,7 +9,7 @@ import { colors, Fonts } from '@/constants/colors';
 import { useAuth } from '@/contexts/auth-context';
 import { useTranslation } from 'react-i18next';
 
-type VehicleCategory = 'taxi' | 'logistics';
+type VehicleCategory = 'taxi' | 'bike' | 'logistics';
 type VehicleType = string;
 
 export default function OnboardingScreen() {
@@ -48,22 +48,27 @@ export default function OnboardingScreen() {
     };
 
     const TAXI_VEHICLES = [
-        { id: 'bike', label: t('onboarding.vehicles.bike'), icon: '🏍️', desc: t('onboarding.vehicles.bikeDesc') },
         { id: 'auto', label: t('onboarding.vehicles.auto'), icon: '🛺', desc: t('onboarding.vehicles.autoDesc') },
         { id: 'cab', label: t('onboarding.vehicles.cab'), icon: '🚗', desc: t('onboarding.vehicles.cabDesc') },
     ];
 
     const LOGISTICS_VEHICLES = [
-        { id: 'bike', label: t('onboarding.vehicles.bike'), icon: '🏍️', desc: t('onboarding.vehicles.logBikeDesc') },
         { id: 'mini_truck', label: t('onboarding.vehicles.miniVan'), icon: '🛻', desc: t('onboarding.vehicles.miniVanDesc') },
         { id: 'truck', label: t('onboarding.vehicles.truck'), icon: '🚚', desc: t('onboarding.vehicles.truckDesc') },
     ];
 
-    const vehicles = category === 'taxi' ? TAXI_VEHICLES : LOGISTICS_VEHICLES;
+    const BIKE_SERVICES = [
+        { id: 'food', label: 'Food', icon: '🍔', desc: 'Restaurant meals & deliveries' },
+        { id: 'grocery', label: 'Grocery', icon: '🛒', desc: 'Supermarket & grocery items' },
+        { id: 'logistics', label: 'Logistics', icon: '📦', desc: 'Parcels & courier deliveries' },
+    ];
+
+    const vehicles = category === 'taxi' ? TAXI_VEHICLES : category === 'logistics' ? LOGISTICS_VEHICLES : [];
 
     const handleContinue = () => {
         if (!category || !vehicleType) return;
-        router.push(`/documents?category=${category}&vehicleType=${vehicleType}`);
+        const targetCategory = category === 'bike' ? 'taxi' : category;
+        router.push(`/documents?category=${targetCategory}&vehicleType=${vehicleType}&serviceCategory=${category}`);
     };
 
     // If driver is verified, show loading indicator while redirecting
@@ -151,6 +156,15 @@ export default function OnboardingScreen() {
                 <Text style={styles.sectionLabel}>{t('onboarding.categoryLabel')}</Text>
                 <View style={styles.categoryRow}>
                     <TouchableOpacity
+                        style={[styles.categoryCard, category === 'bike' && styles.categorySelected]}
+                        onPress={() => { setCategory('bike'); setVehicleType('bike'); }}
+                        activeOpacity={0.8}
+                    >
+                        <Text style={styles.categoryIcon}>🏍️</Text>
+                        <Text style={[styles.categoryLabel, category === 'bike' && styles.categoryLabelSelected]}>{t('onboarding.vehicles.bike')}</Text>
+                        <Text style={styles.categoryDesc}>{t('onboarding.vehicles.bikeDesc')}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
                         style={[styles.categoryCard, category === 'taxi' && styles.categorySelected]}
                         onPress={() => { setCategory('taxi'); setVehicleType(null); }}
                         activeOpacity={0.8}
@@ -164,14 +178,14 @@ export default function OnboardingScreen() {
                         onPress={() => { setCategory('logistics'); setVehicleType(null); }}
                         activeOpacity={0.8}
                     >
-                        <Text style={styles.categoryIcon}>📦</Text>
+                        <Text style={styles.categoryIcon}>🚚</Text>
                         <Text style={[styles.categoryLabel, category === 'logistics' && styles.categoryLabelSelected]}>{t('onboarding.logistics')}</Text>
                         <Text style={styles.categoryDesc}>{t('onboarding.logisticsDesc')}</Text>
                     </TouchableOpacity>
                 </View>
 
-                {/* Vehicle Type */}
-                {category && (
+                {/* Vehicle Type (Taxi & Logistics only) */}
+                {category && category !== 'bike' && vehicles.length > 0 && (
                     <>
                         <Text style={styles.sectionLabel}>{t('onboarding.vehicleType')}</Text>
                         {vehicles.map((v) => (
@@ -192,6 +206,28 @@ export default function OnboardingScreen() {
                                     {vehicleType === v.id && <View style={styles.radioDot} />}
                                 </View>
                             </TouchableOpacity>
+                        ))}
+                    </>
+                )}
+
+                {/* Bike Services (Static / Mandatory) */}
+                {category === 'bike' && (
+                    <>
+                        <Text style={styles.sectionLabel}>Services</Text>
+                        {BIKE_SERVICES.map((s) => (
+                            <View key={s.id} style={styles.serviceCard}>
+                                <View style={styles.serviceCheck}>
+                                    <Feather name="check" size={13} color={colors.white} />
+                                </View>
+                                <Text style={styles.serviceIcon}>{s.icon}</Text>
+                                <View style={styles.serviceInfo}>
+                                    <Text style={styles.serviceLabel}>{s.label}</Text>
+                                    <Text style={styles.serviceDesc}>{s.desc}</Text>
+                                </View>
+                                <View style={styles.includedBadge}>
+                                    <Text style={styles.includedBadgeText}>Included</Text>
+                                </View>
+                            </View>
                         ))}
                     </>
                 )}
@@ -221,16 +257,16 @@ const styles = StyleSheet.create({
     title: { fontFamily: Fonts.black, fontSize: 26, color: colors.text, marginBottom: 6 },
     subtitle: { fontFamily: Fonts.regular, fontSize: 14, color: colors.textSecondary },
     sectionLabel: { fontFamily: Fonts.bold, fontSize: 13, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 12 },
-    categoryRow: { flexDirection: 'row', gap: 12, marginBottom: 28 },
+    categoryRow: { flexDirection: 'row', gap: 10, marginBottom: 28 },
     categoryCard: {
         flex: 1, backgroundColor: colors.surface, borderRadius: 16,
-        padding: 16, alignItems: 'center', borderWidth: 2, borderColor: colors.border,
+        paddingVertical: 14, paddingHorizontal: 6, alignItems: 'center', borderWidth: 2, borderColor: colors.border,
     },
     categorySelected: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
-    categoryIcon: { fontSize: 32, marginBottom: 8 },
-    categoryLabel: { fontFamily: Fonts.bold, fontSize: 15, color: colors.text, marginBottom: 2 },
+    categoryIcon: { fontSize: 28, marginBottom: 6 },
+    categoryLabel: { fontFamily: Fonts.bold, fontSize: 14, color: colors.text, marginBottom: 2, textAlign: 'center' },
     categoryLabelSelected: { color: colors.primary },
-    categoryDesc: { fontFamily: Fonts.regular, fontSize: 12, color: colors.textMuted, textAlign: 'center' },
+    categoryDesc: { fontFamily: Fonts.regular, fontSize: 11, color: colors.textMuted, textAlign: 'center' },
     vehicleCard: {
         flexDirection: 'row', alignItems: 'center', gap: 14,
         backgroundColor: colors.surface, borderRadius: 14,
@@ -248,6 +284,24 @@ const styles = StyleSheet.create({
     },
     radioSelected: { borderColor: colors.primary },
     radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.primary },
+    serviceCard: {
+        flexDirection: 'row', alignItems: 'center', gap: 12,
+        backgroundColor: colors.surface, borderRadius: 14,
+        padding: 14, marginBottom: 10, borderWidth: 1.5, borderColor: colors.border,
+    },
+    serviceCheck: {
+        width: 22, height: 22, borderRadius: 6,
+        backgroundColor: colors.success, alignItems: 'center', justifyContent: 'center',
+    },
+    serviceIcon: { fontSize: 24 },
+    serviceInfo: { flex: 1 },
+    serviceLabel: { fontFamily: Fonts.bold, fontSize: 15, color: colors.text, marginBottom: 2 },
+    serviceDesc: { fontFamily: Fonts.regular, fontSize: 12, color: colors.textMuted },
+    includedBadge: {
+        backgroundColor: colors.successLight, paddingVertical: 4, paddingHorizontal: 8,
+        borderRadius: 8,
+    },
+    includedBadgeText: { fontFamily: Fonts.bold, fontSize: 11, color: colors.success },
     continueBtn: {
         backgroundColor: colors.primary, borderRadius: 14, marginTop: 24,
         paddingVertical: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,

@@ -20,6 +20,13 @@ const SERVICE_INFO: Record<string, { label: string; icon: string; color: string 
     log_truck: { label: 'Truck', icon: '🚚', color: '#795548' },
     parcel: { label: 'Parcel', icon: '📦', color: '#FF9800' },
     bike_taxi: { label: 'Bike Taxi', icon: '🏍️', color: '#FF6B35' },
+    cab: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
+    car: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
+    taxi: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
+    auto: { label: 'Auto', icon: '🛺', color: '#2196F3' },
+    bike: { label: 'Bike Taxi', icon: '🏍️', color: '#FF6B35' },
+    mini_truck: { label: 'Mini Truck', icon: '🛻', color: '#9C27B0' },
+    truck: { label: 'Truck', icon: '🚚', color: '#795548' },
 };
 
 interface GlobalRideAlertModalProps {
