@@ -41,7 +41,6 @@ const SERVICE_LABELS: Record<string, { label: string; icon: string; color: strin
     log_truck: { label: 'Pickup Truck', icon: '🚚', color: '#795548' },
     parcel: { label: 'Parcel', icon: '📦', color: '#FF9800' },
     bike_taxi: { label: 'Bike Taxi', icon: '🏍️', color: '#FF6B35' },
-    cab: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
     car: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
     taxi: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
     auto: { label: 'Auto', icon: '🛺', color: '#2196F3' },
@@ -86,8 +85,8 @@ export default function BookingsScreen() {
 
     // ── Derived service types ──────────────────────────────────────────────
     const serviceTypes = getServiceTypesForDriver(
-        driver?.vehicle_category,
-        driver?.vehicle_type,
+        driver?.vehicle_category ?? 'taxi',
+        driver?.vehicle_type ?? 'bike',
         acceptBoth
     );
 
@@ -117,7 +116,11 @@ export default function BookingsScreen() {
         setAcceptBoth(val);
         await AsyncStorage.setItem(ACCEPT_BOTH_KEY, val ? 'true' : 'false');
         if (driver?.id) {
-            const types = getServiceTypesForDriver(driver.vehicle_category, driver.vehicle_type, val);
+            const types = getServiceTypesForDriver(
+                driver.vehicle_category ?? 'taxi',
+                driver.vehicle_type ?? 'bike',
+                val
+            );
             await setBackgroundTaskData(driver.id, types);
         }
     };

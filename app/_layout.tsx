@@ -139,8 +139,8 @@ function RootContent() {
 
                 const isBike = (driver.vehicle_type ?? '').trim().toLowerCase() === 'bike';
                 const serviceTypes = getServiceTypesForDriver(
-                    driver.vehicle_category,
-                    driver.vehicle_type,
+                    driver.vehicle_category ?? 'taxi',
+                    driver.vehicle_type ?? 'bike',
                     acceptBoth
                 );
 

@@ -24,7 +24,6 @@ const SERVICE_INFO: Record<string, { label: string; icon: string; color: string 
     log_truck: { label: 'Pickup Truck', icon: '🚚', color: '#795548' },
     parcel: { label: 'Parcel', icon: '📦', color: '#FF9800' },
     bike_taxi: { label: 'Bike Taxi', icon: '🏍️', color: '#FF6B35' },
-    cab: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
     car: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
     taxi: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
     auto: { label: 'Auto', icon: '🛺', color: '#2196F3' },

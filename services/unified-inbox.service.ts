@@ -55,8 +55,8 @@ export class UnifiedInboxService {
 
         const isBike = driver.vehicle_type === 'bike' || driver.vehicle_category === 'bike';
         const serviceTypes = getServiceTypesForDriver(
-            driver.vehicle_category,
-            driver.vehicle_type,
+            driver.vehicle_category ?? 'taxi',
+            driver.vehicle_type ?? 'bike',
             acceptBoth
         );
 

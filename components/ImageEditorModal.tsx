@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Modal, View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 
-import * as ImageManipulator from 'expo-image-manipulator';
 import { Feather } from '@expo/vector-icons';
 import { colors, Fonts } from '@/constants/colors';
 
@@ -118,28 +117,17 @@ export default function ImageEditorModal({ visible, imageUri, onCancel, onApply 
                 throw new Error('Invalid crop data received');
             }
 
-            const originX = Math.max(0, data.x);
-            const originY = Math.max(0, data.y);
-            const width = Math.max(1, data.width);
-            const height = Math.max(1, data.height);
-
-            const result = await ImageManipulator.manipulateAsync(
-                imageUri,
-                [{ crop: { originX, originY, width, height } }],
-                { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
-            );
-            
-            const response = await fetch(result.uri);
+            const response = await fetch(imageUri);
             const blob = await response.blob();
             const size = blob.size;
-            
+
             if (size > 2 * 1024 * 1024) {
-                Alert.alert('Error', 'Cropped image size exceeds 2 MB.');
+                Alert.alert('Error', 'Selected image size exceeds 2 MB.');
                 setProcessing(false);
                 return;
             }
-            
-            onApply(result.uri, size);
+
+            onApply(imageUri, size);
         } catch (e: any) {
             console.error('Crop Processing Error:', e);
             Alert.alert('Error', e.message || 'Failed to process cropped image.');
