@@ -14,55 +14,79 @@ function haversineKm(lat1, lng1, lat2, lng2) {
 }
 
 // ─── Service type mapping ────────────────────────────────────────────────────
-function getServiceTypesForDriver(category, vehicleType, acceptBoth = false) {
-    if (category === 'taxi') {
-        if (vehicleType === 'bike') {
-            const base = ['taxi_bike', 'bike_taxi'];
-            return acceptBoth ? [...base, 'log_bike'] : base;
+function getServiceTypesForDriver(category, vehicleType, acceptBoth = true) {
+    const cat = (category || 'taxi').trim().toLowerCase();
+    const vType = (vehicleType || '').trim().toLowerCase();
+
+    if (vType === 'bike') {
+        if (cat === 'logistics') {
+            const base = ['log_bike', 'taxi_bike', 'bike_taxi', 'parcel'];
+            return acceptBoth ? base : ['log_bike', 'taxi_bike', 'parcel'];
         }
-        if (vehicleType === 'auto') return ['taxi_auto'];
-        if (vehicleType === 'cab') return ['taxi_car'];
+        const base = ['taxi_bike', 'bike_taxi', 'log_bike'];
+        return acceptBoth ? [...base, 'parcel'] : base;
     }
-    if (category === 'logistics') {
-        if (vehicleType === 'bike') {
-            const base = ['log_bike'];
-            return acceptBoth ? [...base, 'taxi_bike', 'bike_taxi'] : base;
+
+    if (vType === 'auto' || vType === 'mini_auto') {
+        if (cat === 'logistics') {
+            return ['log_mini_auto', 'log_mini_truck', 'taxi_auto'];
         }
-        if (vehicleType === 'mini_truck') return ['log_mini_truck'];
-        if (vehicleType === 'truck') return ['log_truck'];
+        return acceptBoth ? ['taxi_auto', 'log_mini_auto'] : ['taxi_auto'];
     }
+
+    if (vType === 'cab' || vType === 'car') {
+        if (cat === 'logistics') {
+            return ['taxi_car', 'log_cab', 'log_car', 'cab', 'log_mini_auto'];
+        }
+        return acceptBoth ? ['taxi_car', 'log_cab', 'log_car', 'cab'] : ['taxi_car', 'cab'];
+    }
+
+    if (vType === 'mini_truck' || vType === 'tata_ace') {
+        return ['log_mini_auto', 'log_mini_truck'];
+    }
+
+    if (vType === 'truck' || vType === 'pickup') {
+        return ['log_truck'];
+    }
+
     return [];
 }
 
 // ─── Test 1: Service Type Mapping ─────────────────────────────────────────────
-console.log('  [Test 1] Testing Driver Service Type Mapping...');
+console.log('  [Test 1] Testing Driver Service Type Mapping (Bike, Cab, & Mini-Truck Logistics)...');
 
-// Taxi Bike - Default
+// Taxi Bike - Default (acceptBoth = false) still includes log_bike so Bike Logistics is never dropped
 const taxiBike = getServiceTypesForDriver('taxi', 'bike', false);
-assert.deepStrictEqual(taxiBike, ['taxi_bike', 'bike_taxi'], 'Taxi bike default mapping mismatch');
+assert.deepStrictEqual(taxiBike, ['taxi_bike', 'bike_taxi', 'log_bike'], 'Taxi bike default mapping mismatch');
 
-// Taxi Bike - Cross-category (acceptBoth = true)
+// Taxi Bike - Cross-category (acceptBoth = true, default)
 const taxiBikeCross = getServiceTypesForDriver('taxi', 'bike', true);
-assert.deepStrictEqual(taxiBikeCross, ['taxi_bike', 'bike_taxi', 'log_bike'], 'Taxi bike cross-category mapping mismatch');
+assert.deepStrictEqual(taxiBikeCross, ['taxi_bike', 'bike_taxi', 'log_bike', 'parcel'], 'Taxi bike cross-category mapping mismatch');
 
-// Logistics Bike - Default
+// Logistics Bike - Default (acceptBoth = false) includes taxi_bike (Customer App unified Bike vehicle ID)
 const logBike = getServiceTypesForDriver('logistics', 'bike', false);
-assert.deepStrictEqual(logBike, ['log_bike'], 'Logistics bike default mapping mismatch');
+assert.deepStrictEqual(logBike, ['log_bike', 'taxi_bike', 'parcel'], 'Logistics bike default mapping mismatch');
 
 // Logistics Bike - Cross-category (acceptBoth = true)
 const logBikeCross = getServiceTypesForDriver('logistics', 'bike', true);
-assert.deepStrictEqual(logBikeCross, ['log_bike', 'taxi_bike', 'bike_taxi'], 'Logistics bike cross-category mapping mismatch');
+assert.deepStrictEqual(logBikeCross, ['log_bike', 'taxi_bike', 'bike_taxi', 'parcel'], 'Logistics bike cross-category mapping mismatch');
 
-// Auto & Cab
+// Auto & Cab (Taxi & Logistics)
 const auto = getServiceTypesForDriver('taxi', 'auto', false);
 assert.deepStrictEqual(auto, ['taxi_auto'], 'Auto mapping mismatch');
 
 const cab = getServiceTypesForDriver('taxi', 'cab', false);
-assert.deepStrictEqual(cab, ['taxi_car'], 'Cab mapping mismatch');
+assert.deepStrictEqual(cab, ['taxi_car', 'cab'], 'Cab mapping mismatch');
 
-// Mini Truck & Truck
+const cabCross = getServiceTypesForDriver('taxi', 'cab', true);
+assert.deepStrictEqual(cabCross, ['taxi_car', 'log_cab', 'log_car', 'cab'], 'Cab cross-category mapping mismatch');
+
+const logCab = getServiceTypesForDriver('logistics', 'cab', true);
+assert.deepStrictEqual(logCab, ['taxi_car', 'log_cab', 'log_car', 'cab', 'log_mini_auto'], 'Logistics cab mapping mismatch');
+
+// Mini Truck (Tata Ace - Customer App uses log_mini_auto) & Truck
 const miniTruck = getServiceTypesForDriver('logistics', 'mini_truck', false);
-assert.deepStrictEqual(miniTruck, ['log_mini_truck'], 'Mini truck mapping mismatch');
+assert.deepStrictEqual(miniTruck, ['log_mini_auto', 'log_mini_truck'], 'Mini truck mapping must include log_mini_auto and log_mini_truck');
 
 const truck = getServiceTypesForDriver('logistics', 'truck', false);
 assert.deepStrictEqual(truck, ['log_truck'], 'Truck mapping mismatch');

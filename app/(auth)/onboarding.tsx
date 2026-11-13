@@ -27,6 +27,7 @@ export default function OnboardingScreen() {
 
     const LOGISTICS_VEHICLES = [
         { id: 'bike', label: t('onboarding.vehicles.bike'), icon: '🏍️', desc: t('onboarding.vehicles.logBikeDesc') },
+        { id: 'cab', label: t('onboarding.vehicles.cab'), icon: '🚗', desc: t('onboarding.vehicles.cabDesc') },
         { id: 'mini_truck', label: t('onboarding.vehicles.miniVan'), icon: '🛻', desc: t('onboarding.vehicles.miniVanDesc') },
         { id: 'truck', label: t('onboarding.vehicles.truck'), icon: '🚚', desc: t('onboarding.vehicles.truckDesc') },
     ];
@@ -41,8 +42,10 @@ export default function OnboardingScreen() {
         });
     };
 
+    const normalizedStatus = (driver?.rider_status ?? '').trim().toLowerCase();
+
     // If driver is already verified, prevent fallthrough to vehicle setup while root router transitions
-    if (driver?.rider_status === 'verified') {
+    if (normalizedStatus === 'verified') {
         return (
             <View style={[styles.container, { paddingTop: insets.top, justifyContent: 'center', alignItems: 'center' }]}>
                 <ActivityIndicator size="large" color={colors.primary} />
@@ -51,7 +54,7 @@ export default function OnboardingScreen() {
     }
 
     // If driver already submitted docs, show pending screen
-    if (driver?.rider_status === 'pending') {
+    if (normalizedStatus === 'pending') {
         return (
             <View style={[styles.container, { paddingTop: insets.top }]}>
                 <View style={styles.pendingContent}>
@@ -75,7 +78,7 @@ export default function OnboardingScreen() {
         );
     }
 
-    if (driver?.rider_status === 'rejected') {
+    if (normalizedStatus === 'rejected') {
         return (
             <View style={[styles.container, { paddingTop: insets.top }]}>
                 <View style={styles.pendingContent}>

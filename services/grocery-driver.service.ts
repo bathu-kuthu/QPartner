@@ -217,13 +217,7 @@ export class GroceryDriverService {
 
         const updated = await GroceryDriverService.updateOrderStatus(orderId, 'delivered', driverId);
         try {
-            // Insert driver earnings
-            await supabase.from('driver_earnings').insert({
-                driver_id: driverId,
-                order_id: orderId,
-                amount: deliveryFee,
-                created_at: new Date().toISOString(),
-            });
+            // Delivery fee tracked directly via orders table (status: delivered)
             // Increment total rides in users profile
             const { data: userData } = await supabase.from('users').select('total_rides').eq('id', driverId).single();
             if (userData) {

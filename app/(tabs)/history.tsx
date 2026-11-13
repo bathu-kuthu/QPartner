@@ -106,9 +106,9 @@ export default function HistoryScreen() {
                 <View style={styles.card}>
                     <View style={styles.cardHeader}>
                         <View style={styles.leftHeader}>
-                            <View style={[styles.domainChip, { backgroundColor: '#EFF6FF' }]}>
-                                <Feather name="navigation" size={12} color="#2563EB" />
-                                <Text style={[styles.domainChipText, { color: '#2563EB' }]}>RIDE</Text>
+                            <View style={[styles.domainChip, { backgroundColor: '#FBF0FD' }]}>
+                                <Feather name="navigation" size={12} color="#9E00B5" />
+                                <Text style={[styles.domainChipText, { color: '#9E00B5' }]}>RIDE</Text>
                             </View>
                             <Text style={styles.serviceLabel}>{SERVICE_LABELS[ride.service_type] ?? ride.service_type}</Text>
                         </View>
@@ -232,8 +232,34 @@ export default function HistoryScreen() {
             </View>
 
             {loading ? (
-                <View style={styles.center}>
-                    <ActivityIndicator size="large" color="#FF6B35" />
+                <View style={styles.list} accessibilityRole="progressbar" accessibilityLabel="Loading trip history">
+                    {[1, 2, 3, 4].map((skeletonIdx) => (
+                        <View key={skeletonIdx} style={styles.card}>
+                            <View style={styles.cardHeader}>
+                                <View style={styles.leftHeader}>
+                                    <View style={{ width: 58, height: 20, borderRadius: 6, backgroundColor: '#334155' }} />
+                                    <View style={{ width: 110, height: 16, borderRadius: 6, backgroundColor: '#334155' }} />
+                                </View>
+                                <View style={styles.rightHeader}>
+                                    <View style={{ width: 48, height: 18, borderRadius: 6, backgroundColor: '#334155' }} />
+                                    <View style={{ width: 64, height: 16, borderRadius: 6, backgroundColor: '#1E293B', marginTop: 4 }} />
+                                </View>
+                            </View>
+                            <View style={{ width: 120, height: 12, borderRadius: 4, backgroundColor: '#334155', marginTop: 8 }} />
+                            <View style={styles.divider} />
+                            <View style={styles.routeInfo}>
+                                <View style={styles.routeRow}>
+                                    <View style={[styles.routeDot, { backgroundColor: '#475569' }]} />
+                                    <View style={{ flex: 1, height: 13, borderRadius: 4, backgroundColor: '#334155' }} />
+                                </View>
+                                <View style={styles.routeConnector} />
+                                <View style={styles.routeRow}>
+                                    <View style={[styles.routeDot, { backgroundColor: '#475569' }]} />
+                                    <View style={{ width: '75%', height: 13, borderRadius: 4, backgroundColor: '#334155' }} />
+                                </View>
+                            </View>
+                        </View>
+                    ))}
                 </View>
             ) : (
                 <FlatList
@@ -241,7 +267,7 @@ export default function HistoryScreen() {
                     keyExtractor={(item) => `${item.domain}_${item.data.id}`}
                     renderItem={renderItem}
                     contentContainerStyle={styles.list}
-                    refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadHistory(); }} tintColor="#FF6B35" />}
+                    refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadHistory(); }} tintColor={colors.primary} />}
                     showsVerticalScrollIndicator={false}
                     ListEmptyComponent={
                         <View style={styles.emptyState}>
@@ -272,8 +298,8 @@ const styles = StyleSheet.create({
     earningsChipText: { fontFamily: Fonts.bold, fontSize: 13, color: '#34D399' },
 
     filterRow: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 12, gap: 8 },
-    filterChip: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 16, backgroundColor: '#1E293B' },
-    filterChipActive: { backgroundColor: '#FF6B35' },
+    filterChip: { paddingHorizontal: 14, paddingVertical: 8, minHeight: 36, justifyContent: 'center', borderRadius: 16, backgroundColor: '#1E293B' },
+    filterChipActive: { backgroundColor: colors.primary },
     filterChipText: { fontFamily: Fonts.bold, fontSize: 11, color: '#94A3B8' },
     filterChipTextActive: { color: '#fff' },
 

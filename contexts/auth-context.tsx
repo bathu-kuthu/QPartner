@@ -21,6 +21,16 @@ const AuthContext = createContext<AuthContextType>({
 
 const DRIVER_STORAGE_KEY = '@quickora_driver';
 
+function sanitizeDriver(d: Driver | null): Driver | null {
+    if (!d) return null;
+    return {
+        ...d,
+        rider_status: (d.rider_status ? d.rider_status.trim().toLowerCase() : d.rider_status) as Driver['rider_status'],
+        vehicle_category: (d.vehicle_category ? d.vehicle_category.trim().toLowerCase() : d.vehicle_category) as Driver['vehicle_category'],
+        vehicle_type: d.vehicle_type ? d.vehicle_type.trim().toLowerCase() : d.vehicle_type,
+    };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
     const [driver, setDriverState] = useState<Driver | null>(null);
     const [loading, setLoading] = useState(true);
@@ -61,7 +71,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         try {
             const stored = await AsyncStorage.getItem(DRIVER_STORAGE_KEY);
             if (stored) {
-                const parsed = JSON.parse(stored) as Driver;
+                const parsed = sanitizeDriver(JSON.parse(stored) as Driver)!;
                 setDriverState(parsed);
 
                 // Always fetch fresh data from DB on app start
@@ -72,8 +82,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                     .eq('id', parsed.id)
                     .single();
                 if (data) {
-                    await AsyncStorage.setItem(DRIVER_STORAGE_KEY, JSON.stringify(data));
-                    setDriverState(data as Driver);
+                    const clean = sanitizeDriver(data as Driver)!;
+                    await AsyncStorage.setItem(DRIVER_STORAGE_KEY, JSON.stringify(clean));
+                    setDriverState(clean);
                 }
             }
         } catch (e) {
@@ -86,8 +97,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const setDriverData = async (driverData: Driver | null) => {
         try {
             if (driverData) {
-                await AsyncStorage.setItem(DRIVER_STORAGE_KEY, JSON.stringify(driverData));
-                setDriverState(driverData);
+                const clean = sanitizeDriver(driverData)!;
+                await AsyncStorage.setItem(DRIVER_STORAGE_KEY, JSON.stringify(clean));
+                setDriverState(clean);
             } else {
                 await AsyncStorage.removeItem(DRIVER_STORAGE_KEY);
                 setDriverState(null);

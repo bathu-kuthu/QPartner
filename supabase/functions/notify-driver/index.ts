@@ -39,14 +39,56 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
 // ─── Service type → vehicle category mapping ──────────────────────────────────
 function getVehicleCategories(serviceType: string): { category: string; vehicleType: string }[] {
     const map: Record<string, { category: string; vehicleType: string }[]> = {
-        taxi_bike: [{ category: 'taxi', vehicleType: 'bike' }],
-        bike_taxi: [{ category: 'taxi', vehicleType: 'bike' }],
-        taxi_auto: [{ category: 'taxi', vehicleType: 'auto' }],
-        taxi_car: [{ category: 'taxi', vehicleType: 'cab' }],
-        log_bike: [{ category: 'logistics', vehicleType: 'bike' }, { category: 'taxi', vehicleType: 'bike' }],
-        log_mini_truck: [{ category: 'logistics', vehicleType: 'mini_truck' }],
-        log_truck: [{ category: 'logistics', vehicleType: 'truck' }],
-        parcel: [{ category: 'logistics', vehicleType: 'bike' }],
+        taxi_bike: [
+            { category: 'taxi', vehicleType: 'bike' },
+            { category: 'logistics', vehicleType: 'bike' },
+        ],
+        bike_taxi: [
+            { category: 'taxi', vehicleType: 'bike' },
+            { category: 'logistics', vehicleType: 'bike' },
+        ],
+        taxi_auto: [
+            { category: 'taxi', vehicleType: 'auto' },
+            { category: 'logistics', vehicleType: 'auto' },
+        ],
+        taxi_car: [
+            { category: 'taxi', vehicleType: 'cab' },
+            { category: 'logistics', vehicleType: 'cab' },
+            { category: 'taxi', vehicleType: 'car' },
+            { category: 'logistics', vehicleType: 'car' },
+        ],
+        cab: [
+            { category: 'taxi', vehicleType: 'cab' },
+            { category: 'logistics', vehicleType: 'cab' },
+        ],
+        log_cab: [
+            { category: 'logistics', vehicleType: 'cab' },
+            { category: 'taxi', vehicleType: 'cab' },
+        ],
+        log_car: [
+            { category: 'logistics', vehicleType: 'cab' },
+            { category: 'taxi', vehicleType: 'cab' },
+        ],
+        log_bike: [
+            { category: 'logistics', vehicleType: 'bike' },
+            { category: 'taxi', vehicleType: 'bike' },
+        ],
+        log_mini_auto: [
+            { category: 'logistics', vehicleType: 'mini_truck' },
+            { category: 'logistics', vehicleType: 'auto' },
+            { category: 'taxi', vehicleType: 'auto' },
+        ],
+        log_mini_truck: [
+            { category: 'logistics', vehicleType: 'mini_truck' },
+            { category: 'logistics', vehicleType: 'auto' },
+        ],
+        log_truck: [
+            { category: 'logistics', vehicleType: 'truck' },
+        ],
+        parcel: [
+            { category: 'logistics', vehicleType: 'bike' },
+            { category: 'taxi', vehicleType: 'bike' },
+        ],
     };
     return map[serviceType] ?? [];
 }
@@ -187,12 +229,12 @@ Deno.serve(async (req: Request) => {
         }
 
         // Fetch online verified drivers with FCM tokens
+        // Note: do not select non-existent 'accept_both' column; normalize rider_status for trailing whitespace
         const { data: drivers, error } = await supabase
             .from('users')
-            .select('id, fcm_token, current_lat, current_lng, vehicle_category, vehicle_type, accept_both')
+            .select('id, fcm_token, current_lat, current_lng, vehicle_category, vehicle_type, rider_status')
             .eq('is_driver', true)
             .eq('is_online', true)
-            .eq('rider_status', 'verified')
             .not('fcm_token', 'is', null);
 
         if (error || !drivers) {
@@ -210,13 +252,14 @@ Deno.serve(async (req: Request) => {
         const notifyPromises: Promise<void>[] = [];
 
         for (const driver of drivers) {
+            if ((driver.rider_status ?? '').trim().toLowerCase() !== 'verified') continue;
+
+            const dCategory = (driver.vehicle_category ?? 'taxi').trim().toLowerCase();
+            const dVehicle = (driver.vehicle_type ?? '').trim().toLowerCase();
+
             const canHandle = eligibleCategories.some(
-                (ec) => ec.category === driver.vehicle_category && ec.vehicleType === driver.vehicle_type
-            ) || (driver.accept_both && (
-                ride.service_type === 'log_bike' ||
-                ride.service_type === 'taxi_bike' ||
-                ride.service_type === 'bike_taxi'
-            ));
+                (ec) => ec.category === dCategory && ec.vehicleType === dVehicle
+            );
 
             if (!canHandle) continue;
 

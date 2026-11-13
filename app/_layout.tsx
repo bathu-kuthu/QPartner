@@ -50,17 +50,18 @@ function RootContent() {
         if (!rootNavState?.key) return;
         if (loading) return;
 
-        const currentRouteKey = `${driver?.id ?? 'anon'}:${driver?.rider_status ?? 'none'}:${driver?.is_driver ?? 'false'}`;
+        const normalizedStatus = (driver?.rider_status ?? 'none').trim().toLowerCase();
+        const currentRouteKey = `${driver?.id ?? 'anon'}:${normalizedStatus}:${driver?.is_driver ?? 'false'}`;
         if (lastRoutedKeyRef.current === currentRouteKey) return;
         lastRoutedKeyRef.current = currentRouteKey;
 
         if (!driver) {
             setTimeout(() => router.replace('/(auth)/login'), 0);
-        } else if (!driver.is_driver || driver.rider_status === 'unsubmitted') {
+        } else if (!driver.is_driver || normalizedStatus === 'unsubmitted') {
             setTimeout(() => router.replace('/(auth)/onboarding'), 0);
-        } else if (driver.rider_status === 'pending' || driver.rider_status === 'rejected') {
+        } else if (normalizedStatus === 'pending' || normalizedStatus === 'rejected') {
             setTimeout(() => router.replace('/(auth)/onboarding'), 0);
-        } else if (driver.rider_status === 'verified') {
+        } else if (normalizedStatus === 'verified') {
             // Async check for required permissions before going to bookings
             (async () => {
                 try {
@@ -126,17 +127,17 @@ function RootContent() {
 
         const initRealtime = async () => {
             try {
-                // Get acceptBoth preference from AsyncStorage
-                let acceptBoth = false;
+                // Get acceptBoth preference from AsyncStorage (default true so Bike partners get both Taxi & Logistics)
+                let acceptBoth = true;
                 try {
                     const AS = await import('@react-native-async-storage/async-storage');
                     const acceptBothVal = await AS.default.getItem('@quickora_accept_both');
-                    acceptBoth = acceptBothVal === 'true';
+                    acceptBoth = acceptBothVal !== 'false';
                 } catch {
                     // AsyncStorage failure is non-critical, continue with default
                 }
 
-                const isBike = driver.vehicle_type === 'bike';
+                const isBike = (driver.vehicle_type ?? '').trim().toLowerCase() === 'bike';
                 const serviceTypes = getServiceTypesForDriver(
                     driver.vehicle_category ?? 'taxi',
                     driver.vehicle_type ?? 'bike',
@@ -235,7 +236,7 @@ function RootContent() {
             foodChannel?.unsubscribe?.();
             groceryChannel?.unsubscribe?.();
         };
-    }, [driver?.id, driver?.is_online, driver?.vehicle_type]);
+    }, [driver?.id, driver?.is_online, driver?.vehicle_type, driver?.vehicle_category]);
 
     // Handle Notification Actions and Foreground Reception ───
     useEffect(() => {

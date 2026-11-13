@@ -12,12 +12,16 @@ import { NativeBridgeService } from '@/services/native-bridge.service';
 const { width, height } = Dimensions.get('window');
 
 const SERVICE_INFO: Record<string, { label: string; icon: string; color: string }> = {
-    taxi_bike: { label: 'Bike Taxi', icon: '🏍️', color: '#FF6B35' },
+    taxi_bike: { label: 'Bike Taxi / Delivery', icon: '🏍️', color: '#FF6B35' },
     taxi_auto: { label: 'Auto', icon: '🛺', color: '#2196F3' },
     taxi_car: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
+    cab: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
+    log_cab: { label: 'Cab Logistics', icon: '🚗', color: '#4CAF50' },
+    log_car: { label: 'Cab Logistics', icon: '🚗', color: '#4CAF50' },
     log_bike: { label: 'Bike Delivery', icon: '🏍️', color: '#FF6B35' },
+    log_mini_auto: { label: 'Tata Ace / Mini Truck', icon: '🛻', color: '#9C27B0' },
     log_mini_truck: { label: 'Mini Truck', icon: '🛻', color: '#9C27B0' },
-    log_truck: { label: 'Truck', icon: '🚚', color: '#795548' },
+    log_truck: { label: 'Pickup Truck', icon: '🚚', color: '#795548' },
     parcel: { label: 'Parcel', icon: '📦', color: '#FF9800' },
     bike_taxi: { label: 'Bike Taxi', icon: '🏍️', color: '#FF6B35' },
 };

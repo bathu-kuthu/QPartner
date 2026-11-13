@@ -29,12 +29,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 const ACCEPT_BOTH_KEY = '@quickora_accept_both';
 
 const SERVICE_LABELS: Record<string, { label: string; icon: string; color: string }> = {
-    taxi_bike: { label: 'Bike Taxi', icon: '🏍️', color: '#FF6B35' },
+    taxi_bike: { label: 'Bike Taxi / Delivery', icon: '🏍️', color: '#FF6B35' },
     taxi_auto: { label: 'Auto', icon: '🛺', color: '#2196F3' },
     taxi_car: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
+    cab: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
+    log_cab: { label: 'Cab Logistics', icon: '🚗', color: '#4CAF50' },
+    log_car: { label: 'Cab Logistics', icon: '🚗', color: '#4CAF50' },
     log_bike: { label: 'Bike Delivery', icon: '🏍️', color: '#FF6B35' },
+    log_mini_auto: { label: 'Tata Ace / Mini Truck', icon: '🛻', color: '#9C27B0' },
     log_mini_truck: { label: 'Mini Truck', icon: '🛻', color: '#9C27B0' },
-    log_truck: { label: 'Truck', icon: '🚚', color: '#795548' },
+    log_truck: { label: 'Pickup Truck', icon: '🚚', color: '#795548' },
     parcel: { label: 'Parcel', icon: '📦', color: '#FF9800' },
     bike_taxi: { label: 'Bike Taxi', icon: '🏍️', color: '#FF6B35' },
     custom: { label: 'Custom', icon: '⚡', color: '#607D8B' },
@@ -53,7 +57,7 @@ export default function BookingsScreen() {
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [accepting, setAccepting] = useState<string | null>(null);
-    const [acceptBoth, setAcceptBoth] = useState(false);   // cross-category for bikes
+    const [acceptBoth, setAcceptBoth] = useState(true);   // cross-category for bikes enabled by default
     const [driverLat, setDriverLat] = useState<number | undefined>(driver?.current_lat ?? undefined);
     const [driverLng, setDriverLng] = useState<number | undefined>(driver?.current_lng ?? undefined);
     const [networkError, setNetworkError] = useState(false);
@@ -78,16 +82,17 @@ export default function BookingsScreen() {
     );
 
     // Is this driver a bike driver? (cross-category toggle only shows for bikes)
-    const isBikeDriver = driver?.vehicle_type === 'bike';
+    const isBikeDriver = (driver?.vehicle_type ?? '').trim().toLowerCase() === 'bike';
 
-    const crossCategoryLabel = driver?.vehicle_category === 'taxi'
+    const crossCategoryLabel = (driver?.vehicle_category ?? '').trim().toLowerCase() === 'taxi'
         ? '📦 Low rides? Also accept Bike Logistics'
         : '🏍️ Low rides? Also accept Bike Taxi';
 
     // ── Load persisted acceptBoth pref ────────────────────────────────────
     useEffect(() => {
         AsyncStorage.getItem(ACCEPT_BOTH_KEY).then((val) => {
-            if (val === 'true') setAcceptBoth(true);
+            if (val === 'false') setAcceptBoth(false);
+            else setAcceptBoth(true);
         });
     }, []);
 
@@ -97,13 +102,6 @@ export default function BookingsScreen() {
         if (driver?.id) {
             const types = getServiceTypesForDriver(driver.vehicle_category ?? 'taxi', driver.vehicle_type ?? 'bike', val);
             await setBackgroundTaskData(driver.id, types);
-            // Persist to DB — the notify-driver Edge Function reads accept_both
-            // server-side to decide which drivers qualify for cross-category push notifications.
-            try {
-                await supabase.from('users').update({ accept_both: val }).eq('id', driver.id);
-            } catch (e) {
-                console.warn('Failed to persist accept_both to DB:', e);
-            }
         }
     };
 
@@ -178,9 +176,9 @@ export default function BookingsScreen() {
             ]);
             setActiveRide(active);
             if (!active) {
-                setAvailableRides(available.slice(0, 1));
-                setAvailableFoodOrders(food.slice(0, 1));
-                setAvailableGroceryOrders(grocery.slice(0, 1));
+                setAvailableRides(available);
+                setAvailableFoodOrders(food);
+                setAvailableGroceryOrders(grocery);
             }
         } catch (e: any) {
             if (e.message === 'NETWORK_ERROR') setNetworkError(true);
@@ -201,7 +199,7 @@ export default function BookingsScreen() {
         channelRef.current = DriverService.subscribeToPendingRides(
             (rides) => {
                 try {
-                    if (!activeRide) setAvailableRides(rides.slice(0, 1));
+                    if (!activeRide) setAvailableRides(rides);
                 } catch (e) {
                     console.warn('Error updating available rides:', e);
                 }
@@ -214,7 +212,7 @@ export default function BookingsScreen() {
             foodChannelRef.current = FoodDriverService.subscribeToPendingOrders(
                 (orders) => {
                     try {
-                        if (!activeRide) setAvailableFoodOrders(orders.slice(0, 1));
+                        if (!activeRide) setAvailableFoodOrders(orders);
                     } catch (e) {
                         console.warn('Error updating available food:', e);
                     }
@@ -225,7 +223,7 @@ export default function BookingsScreen() {
             groceryChannelRef.current = GroceryDriverService.subscribeToPendingOrders(
                 (orders) => {
                     try {
-                        if (!activeRide) setAvailableGroceryOrders(orders.slice(0, 1));
+                        if (!activeRide) setAvailableGroceryOrders(orders);
                     } catch (e) {
                         console.warn('Error updating available grocery:', e);
                     }

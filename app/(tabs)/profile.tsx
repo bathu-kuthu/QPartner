@@ -151,8 +151,29 @@ export default function ProfileScreen() {
 
     if (loading) {
         return (
-            <View style={[styles.container, styles.center, { paddingTop: insets.top }]}>
-                <ActivityIndicator size="large" color={colors.primary} />
+            <View style={[styles.container, { paddingTop: insets.top }]} accessibilityRole="progressbar" accessibilityLabel="Loading driver profile">
+                <View style={styles.header}>
+                    <Text style={styles.headerTitle}>{t('profile.title')}</Text>
+                </View>
+                <View style={styles.profileCard}>
+                    <View style={[styles.avatarBox, { backgroundColor: '#E2E8F0' }]} />
+                    <View style={styles.profileInfo}>
+                        <View style={{ width: 130, height: 16, borderRadius: 6, backgroundColor: '#E2E8F0', marginBottom: 6 }} />
+                        <View style={{ width: 96, height: 13, borderRadius: 5, backgroundColor: '#F1F5F9', marginBottom: 6 }} />
+                        <View style={{ width: 110, height: 12, borderRadius: 5, backgroundColor: '#E2E8F0' }} />
+                    </View>
+                </View>
+                <View style={styles.statsGrid}>
+                    {[1, 2, 3].map((statIdx) => (
+                        <View key={statIdx} style={styles.statBox}>
+                            <View style={{ width: 48, height: 22, borderRadius: 6, backgroundColor: '#E2E8F0', marginBottom: 4 }} />
+                            <View style={{ width: 64, height: 12, borderRadius: 4, backgroundColor: '#F1F5F9' }} />
+                        </View>
+                    ))}
+                </View>
+                <View style={[styles.earningsCard, { backgroundColor: '#F1F5F9' }]}>
+                    <View style={{ width: '100%', height: 24, borderRadius: 6, backgroundColor: '#E2E8F0' }} />
+                </View>
             </View>
         );
     }

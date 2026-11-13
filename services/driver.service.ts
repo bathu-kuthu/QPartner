@@ -3,26 +3,49 @@ import { Ride, DriverEarning, Notification, Review, RideStop, SosAlert, DriverPl
 
 // ─── Service type mapping ────────────────────────────────────────────────────
 export function getServiceTypesForDriver(
-    category: 'taxi' | 'logistics',
+    category: 'taxi' | 'logistics' | string,
     vehicleType: string,
-    acceptBoth: boolean = false
+    acceptBoth: boolean = true
 ): string[] {
-    if (category === 'taxi') {
-        if (vehicleType === 'bike') {
-            const base = ['taxi_bike', 'bike_taxi'];
-            return acceptBoth ? [...base, 'log_bike'] : base;
+    const cat = (category || 'taxi').trim().toLowerCase();
+    const vType = (vehicleType || '').trim().toLowerCase();
+
+    if (vType === 'bike') {
+        if (cat === 'logistics') {
+            // Customer App books Bike orders as 'taxi_bike' in unified ALL_VEHICLES,
+            // while logistics fee_config defines 'log_bike'. Include both so Bike Logistics
+            // partners never miss Bike orders placed from Customer App.
+            const base = ['log_bike', 'taxi_bike', 'bike_taxi', 'parcel'];
+            return acceptBoth ? base : ['log_bike', 'taxi_bike', 'parcel'];
         }
-        if (vehicleType === 'auto') return ['taxi_auto'];
-        if (vehicleType === 'cab') return ['taxi_car'];
+        // Default / 'taxi' bike partner
+        const base = ['taxi_bike', 'bike_taxi', 'log_bike'];
+        return acceptBoth ? [...base, 'parcel'] : base;
     }
-    if (category === 'logistics') {
-        if (vehicleType === 'bike') {
-            const base = ['log_bike'];
-            return acceptBoth ? [...base, 'taxi_bike', 'bike_taxi'] : base;
+
+    if (vType === 'auto' || vType === 'mini_auto') {
+        if (cat === 'logistics') {
+            return ['log_mini_auto', 'log_mini_truck', 'taxi_auto'];
         }
-        if (vehicleType === 'mini_truck') return ['log_mini_truck'];
-        if (vehicleType === 'truck') return ['log_truck'];
+        return acceptBoth ? ['taxi_auto', 'log_mini_auto'] : ['taxi_auto'];
     }
+
+    if (vType === 'cab' || vType === 'car') {
+        if (cat === 'logistics') {
+            return ['taxi_car', 'log_cab', 'log_car', 'cab', 'log_mini_auto'];
+        }
+        return acceptBoth ? ['taxi_car', 'log_cab', 'log_car', 'cab'] : ['taxi_car', 'cab'];
+    }
+
+    if (vType === 'mini_truck' || vType === 'tata_ace') {
+        // Customer App (Quickora & quickora-web) inserts 'log_mini_auto' for Tata Ace / Mini Truck
+        return ['log_mini_auto', 'log_mini_truck'];
+    }
+
+    if (vType === 'truck' || vType === 'pickup') {
+        return ['log_truck'];
+    }
+
     return [];
 }
 
@@ -151,7 +174,13 @@ export class DriverService {
                 });
 
                 if (txError) {
-                    throw new Error(txError.message || 'Failed to complete ride earnings and stats');
+                    // Fallback directly to driver_earnings using verified schema (driver_id, ride_id, amount)
+                    await supabase.from('driver_earnings').insert({
+                        driver_id: ride.driver_id,
+                        ride_id: rideId,
+                        amount: driverAmount,
+                        created_at: new Date().toISOString(),
+                    });
                 }
             }
         }
@@ -246,12 +275,24 @@ export class DriverService {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         try {
-            const { data } = await supabase
+            // 1. Ride earnings (from driver_earnings referencing rides.id)
+            const { data: rideEarnings } = await supabase
                 .from('driver_earnings')
                 .select('amount')
                 .eq('driver_id', driverId)
                 .gte('created_at', today.toISOString());
-            return (data ?? []).reduce((s: number, e: any) => s + (e.amount || 0), 0);
+            const rideTotal = (rideEarnings ?? []).reduce((s: number, e: any) => s + (Number(e.amount) || 0), 0);
+
+            // 2. Order delivery earnings (from delivered orders in orders table)
+            const { data: orderEarnings } = await supabase
+                .from('orders')
+                .select('delivery_fee')
+                .eq('driver_id', driverId)
+                .eq('status', 'delivered')
+                .gte('updated_at', today.toISOString());
+            const orderTotal = (orderEarnings ?? []).reduce((s: number, o: any) => s + (Number(o.delivery_fee) || 0), 0);
+
+            return rideTotal + orderTotal;
         } catch { return 0; }
     }
 
