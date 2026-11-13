@@ -53,10 +53,10 @@ export class UnifiedInboxService {
         this.stop(); // Clean up existing channels
         this.isInitialized = true;
 
-        const isBike = driver.vehicle_type === 'bike';
+        const isBike = driver.vehicle_type === 'bike' || driver.vehicle_category === 'bike';
         const serviceTypes = getServiceTypesForDriver(
-            driver.vehicle_category ?? 'taxi',
-            driver.vehicle_type ?? 'bike',
+            driver.vehicle_category,
+            driver.vehicle_type,
             acceptBoth
         );
 

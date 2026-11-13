@@ -19,8 +19,6 @@ export default function OTPScreen() {
     const [otp, setOtp] = useState(['', '', '', '', '', '']);
     const [loading, setLoading] = useState(false);
     const [resendTimer, setResendTimer] = useState(30);
-    const [errorMessage, setErrorMessage] = useState<string | null>(null);
-    const isVerifyingRef = useRef(false);
     const inputs = useRef<TextInput[]>([]);
 
     useEffect(() => {
@@ -31,26 +29,10 @@ export default function OTPScreen() {
     }, []);
 
     const handleChange = (val: string, idx: number) => {
-        setErrorMessage(null);
-        const digitsOnly = val.replace(/[^0-9]/g, '');
-
-        // Handle Paste of full 6-digit OTP
-        if (digitsOnly.length === 6) {
-            const pastedOtp = digitsOnly.split('');
-            setOtp(pastedOtp);
-            Keyboard.dismiss();
-            verifyCode(digitsOnly);
-            return;
-        }
-
         const newOtp = [...otp];
-        newOtp[idx] = digitsOnly.slice(-1); // Only take latest single digit
+        newOtp[idx] = val.replace(/[^0-9]/g, '');
         setOtp(newOtp);
-
-        if (digitsOnly && idx < 5) {
-            inputs.current[idx + 1]?.focus();
-        }
-
+        if (val && idx < 5) inputs.current[idx + 1]?.focus();
         if (newOtp.every((d) => d !== '') && newOtp.join('').length === 6) {
             Keyboard.dismiss();
             verifyCode(newOtp.join(''));
@@ -64,54 +46,41 @@ export default function OTPScreen() {
     };
 
     const verifyCode = async (code: string) => {
-        if (loading || isVerifyingRef.current) return;
-        if (!code || code.length !== 6) return;
-
-        isVerifyingRef.current = true;
+        if (loading) return;
         setLoading(true);
-        setErrorMessage(null);
-
         try {
             const driver = await AuthService.verifyOTP(phone!, code);
             if (driver) {
                 // Existing driver
                 await setDriverData(driver);
-                if (driver.rider_status === 'unsubmitted' || driver.rider_status === 'pending' || driver.rider_status === 'rejected') {
-                    router.replace('/(auth)/onboarding');
-                } else {
+                if (driver.rider_status === 'verified') {
                     router.replace('/(tabs)/bookings');
+                } else {
+                    router.replace('/(auth)/onboarding');
                 }
             } else {
-                // New driver — proceed to profile registration
-                router.push({ pathname: '/(auth)/register', params: { phone } });
+                // New driver — go to register
+                router.push(`/register?phone=${encodeURIComponent(phone)}`);
             }
         } catch (e: any) {
-            const msg = e.message?.includes('timed out')
-                ? 'Verification timed out. Please check your internet connection and try again.'
-                : (e.message ?? t('common.error'));
-            setErrorMessage(msg);
-            Alert.alert(t('common.error'), msg);
+            Alert.alert(t('common.error'), e.message ?? t('common.error'));
             setOtp(['', '', '', '', '', '']);
             inputs.current[0]?.focus();
         } finally {
             setLoading(false);
-            isVerifyingRef.current = false;
         }
     };
 
     const handleResend = async () => {
-        if (resendTimer > 0 || loading || isVerifyingRef.current) return;
-        setErrorMessage(null);
+        if (resendTimer > 0) return;
         try {
             await AuthService.sendOTP(phone!);
             setResendTimer(30);
             setOtp(['', '', '', '', '', '']);
             inputs.current[0]?.focus();
-            Alert.alert(t('common.done'), t('otp.resendSuccess') || 'A new verification code has been sent.');
-        } catch (e: any) {
-            const msg = e.message ?? t('otp.resendError');
-            setErrorMessage(msg);
-            Alert.alert(t('common.error'), msg);
+            Alert.alert(t('common.done'), t('otp.resendSuccess'));
+        } catch {
+            Alert.alert(t('common.error'), t('otp.resendError'));
         }
     };
 
@@ -148,13 +117,6 @@ export default function OTPScreen() {
                     ))}
                 </View>
 
-                {errorMessage && (
-                    <View style={styles.errorBanner}>
-                        <Feather name="alert-circle" size={14} color={colors.error} />
-                        <Text style={styles.errorBannerText}>{errorMessage}</Text>
-                    </View>
-                )}
-
                 {loading && (
                     <View style={styles.loadingRow}>
                         <ActivityIndicator size="small" color={colors.primary} />
@@ -163,23 +125,15 @@ export default function OTPScreen() {
                 )}
 
                 <TouchableOpacity
-                    style={[styles.verifyBtn, (loading || otp.join('').length < 6) && styles.btnDisabled]}
+                    style={[styles.verifyBtn, loading && styles.btnDisabled]}
                     onPress={() => verifyCode(otp.join(''))}
                     disabled={loading || otp.join('').length < 6}
                     activeOpacity={0.85}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('otp.verify')}
                 >
                     <Text style={styles.verifyText}>{t('otp.verify')}</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity
-                    onPress={handleResend}
-                    disabled={resendTimer > 0 || loading}
-                    style={styles.resendRow}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('otp.resend')}
-                >
+                <TouchableOpacity onPress={handleResend} disabled={resendTimer > 0} style={styles.resendRow}>
                     <Text style={[styles.resendText, resendTimer > 0 && styles.resendDisabled]}>
                         {resendTimer > 0 ? t('otp.resendIn', { seconds: resendTimer }) : t('otp.resend')}
                     </Text>
@@ -211,22 +165,6 @@ const styles = StyleSheet.create({
     otpDisabled: { opacity: 0.6 },
     loadingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 16 },
     loadingText: { fontFamily: Fonts.medium, fontSize: 14, color: colors.primary },
-    errorBanner: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        backgroundColor: colors.errorLight || '#FEE2E2',
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        borderRadius: 10,
-        marginBottom: 20,
-    },
-    errorBannerText: {
-        flex: 1,
-        fontFamily: Fonts.medium,
-        fontSize: 13,
-        color: colors.error,
-    },
     verifyBtn: {
         backgroundColor: colors.primary, borderRadius: 14,
         paddingVertical: 16, alignItems: 'center', marginBottom: 16,

@@ -19,26 +19,22 @@ export default function RegisterScreen() {
     const { t } = useTranslation();
     const [name, setName] = useState('');
     const [loading, setLoading] = useState(false);
-    const isSubmittingRef = React.useRef(false);
 
     const handleRegister = async () => {
-        if (loading || isSubmittingRef.current) return;
-        if (name.trim().length < 2) {
-            Alert.alert(t('common.error'), t('common.invalidName'));
+        const trimmedName = name.trim();
+        if (!trimmedName || !/^[A-Za-z\s]+$/.test(trimmedName)) {
+            Alert.alert(t('common.error'), 'Please enter a valid full name using alphabets only.');
             return;
         }
-
-        isSubmittingRef.current = true;
         setLoading(true);
         try {
-            const driver = await AuthService.createDriver(phone!, name.trim());
+            const driver = await AuthService.createDriver(phone!, trimmedName);
             await setDriverData(driver as Driver);
             router.replace('/(auth)/onboarding');
         } catch (e: any) {
             Alert.alert(t('common.error'), e.message ?? t('common.error'));
         } finally {
             setLoading(false);
-            isSubmittingRef.current = false;
         }
     };
 

@@ -11,15 +11,11 @@ import { AuthService } from '@/services/auth.service';
 import { useTranslation } from 'react-i18next';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { normalizeIndianPhone } from '@/services/auth.service';
-
 export default function LoginScreen() {
     const insets = useSafeAreaInsets();
     const { t, i18n } = useTranslation();
     const [phone, setPhone] = useState('');
     const [loading, setLoading] = useState(false);
-    const [errorMessage, setErrorMessage] = useState<string | null>(null);
-    const isSubmittingRef = React.useRef(false);
 
     const toggleLanguage = async () => {
         const newLang = i18n.language === 'en' ? 'ta' : 'en';
@@ -28,33 +24,22 @@ export default function LoginScreen() {
     };
 
     const handleSendOTP = async () => {
-        if (loading || isSubmittingRef.current) return;
-        setErrorMessage(null);
-
-        const norm = normalizeIndianPhone(phone);
-        if (!norm.isValid) {
-            const errorText = norm.error === 'Mobile number must start with 6, 7, 8, or 9'
-                ? t('common.invalidPhone')
-                : t('common.invalidPhone');
-            setErrorMessage(errorText);
-            Alert.alert(t('common.error'), errorText);
+        const cleaned = phone.replace(/\D/g, '');
+        if (cleaned.length < 10) {
+            Alert.alert(t('common.error'), t('common.invalidPhone'));
             return;
         }
 
-        isSubmittingRef.current = true;
+        const formattedPhone = cleaned.startsWith('91') ? `+${cleaned}` : `+91${cleaned}`;
+
         setLoading(true);
         try {
-            await AuthService.sendOTP(norm.formatted);
-            router.push({ pathname: '/(auth)/otp', params: { phone: norm.formatted } });
+            await AuthService.sendOTP(formattedPhone);
+            router.push(`/otp?phone=${encodeURIComponent(formattedPhone)}`);
         } catch (e: any) {
-            const msg = e.message?.includes('timed out')
-                ? 'Request timed out. Please check your internet connection and try again.'
-                : (e.message ?? t('common.error'));
-            setErrorMessage(msg);
-            Alert.alert(t('common.error'), msg);
+            Alert.alert(t('common.error'), e.message ?? t('common.error'));
         } finally {
             setLoading(false);
-            isSubmittingRef.current = false;
         }
     };
 
@@ -94,7 +79,7 @@ export default function LoginScreen() {
                     <Text style={styles.title}>{t('login.welcome')}</Text>
                     <Text style={styles.subtitle}>{t('login.subtitle')}</Text>
 
-                    <View style={[styles.inputContainer, errorMessage && styles.inputContainerError]}>
+                    <View style={styles.inputContainer}>
                         <View style={styles.prefixBox}>
                             <Text style={styles.prefix}>🇮🇳 +91</Text>
                         </View>
@@ -105,31 +90,17 @@ export default function LoginScreen() {
                             keyboardType="phone-pad"
                             maxLength={10}
                             value={phone}
-                            onChangeText={(text) => {
-                                setErrorMessage(null);
-                                setPhone(text.replace(/[^\d]/g, ''));
-                            }}
+                            onChangeText={setPhone}
                             returnKeyType="done"
                             onSubmitEditing={handleSendOTP}
-                            editable={!loading}
-                            accessibilityLabel="Mobile Number Input"
                         />
                     </View>
 
-                    {errorMessage && (
-                        <View style={styles.errorBanner}>
-                            <Feather name="alert-circle" size={14} color={colors.error} />
-                            <Text style={styles.errorBannerText}>{errorMessage}</Text>
-                        </View>
-                    )}
-
                     <TouchableOpacity
-                        style={[styles.btn, (loading || phone.trim().length < 10) && styles.btnDisabled]}
+                        style={[styles.btn, loading && styles.btnDisabled]}
                         onPress={handleSendOTP}
-                        disabled={loading || phone.trim().length < 10}
+                        disabled={loading}
                         activeOpacity={0.85}
-                        accessibilityRole="button"
-                        accessibilityLabel={t('common.getOTP')}
                     >
                         {loading ? (
                             <ActivityIndicator color={colors.white} />
@@ -146,7 +117,8 @@ export default function LoginScreen() {
                     {t('login.termsNote')}{' '}
                     <Text
                         style={styles.link}
-                        onPress={() => router.push('/terms')}
+                        // ✅ Navigates to the embedded Terms & Conditions screen
+                        onPress={() => router.push('../terms')}
                     >
                         {t('login.termsLink')}
                     </Text>
@@ -183,26 +155,7 @@ const styles = StyleSheet.create({
     inputContainer: {
         flexDirection: 'row', alignItems: 'center',
         borderWidth: 1.5, borderColor: colors.border,
-        borderRadius: 14, overflow: 'hidden', marginBottom: 16,
-    },
-    inputContainerError: {
-        borderColor: colors.error,
-    },
-    errorBanner: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        backgroundColor: colors.errorLight || '#FEE2E2',
-        paddingHorizontal: 12,
-        paddingVertical: 8,
-        borderRadius: 8,
-        marginBottom: 16,
-    },
-    errorBannerText: {
-        flex: 1,
-        fontFamily: Fonts.medium,
-        fontSize: 12,
-        color: colors.error,
+        borderRadius: 14, overflow: 'hidden', marginBottom: 20,
     },
     prefixBox: {
         backgroundColor: colors.background, paddingHorizontal: 14,

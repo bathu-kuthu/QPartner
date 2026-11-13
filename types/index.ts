@@ -3,12 +3,13 @@ export interface Driver {
     phone: string;
     name: string;
     email?: string;
+    auth_id?: string;
     avatar?: string;
     is_driver: boolean;
     rider_status: 'unsubmitted' | 'pending' | 'verified' | 'rejected';
     vehicle_type?: string;
     vehicle_number?: string;
-    vehicle_category?: 'taxi' | 'logistics';
+    vehicle_category?: 'taxi' | 'logistics' | 'bike';
     pan_url?: string;
     pan_number?: string;
     aadhaar_url?: string;
@@ -91,7 +92,7 @@ export interface DriverEarning {
     ride?: Ride;
 }
 
-export type VehicleCategory = 'taxi' | 'logistics';
+export type VehicleCategory = 'taxi' | 'logistics' | 'bike';
 export type TaxiVehicleType = 'bike' | 'auto' | 'cab';
 export type LogisticsVehicleType = 'bike' | 'mini_van' | 'truck';
 

@@ -41,6 +41,13 @@ const SERVICE_LABELS: Record<string, { label: string; icon: string; color: strin
     log_truck: { label: 'Pickup Truck', icon: '🚚', color: '#795548' },
     parcel: { label: 'Parcel', icon: '📦', color: '#FF9800' },
     bike_taxi: { label: 'Bike Taxi', icon: '🏍️', color: '#FF6B35' },
+    cab: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
+    car: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
+    taxi: { label: 'Cab', icon: '🚗', color: '#4CAF50' },
+    auto: { label: 'Auto', icon: '🛺', color: '#2196F3' },
+    bike: { label: 'Bike Taxi', icon: '🏍️', color: '#FF6B35' },
+    mini_truck: { label: 'Mini Truck', icon: '🛻', color: '#9C27B0' },
+    truck: { label: 'Truck', icon: '🚚', color: '#795548' },
     custom: { label: 'Custom', icon: '⚡', color: '#607D8B' },
 };
 
@@ -74,10 +81,13 @@ export default function BookingsScreen() {
     driverRef.current = driver;
     const lastLocationDbUpdateRef = useRef<number>(0);
 
+    const activeRideRef = useRef<Ride | null>(null);
+    activeRideRef.current = activeRide;
+
     // ── Derived service types ──────────────────────────────────────────────
     const serviceTypes = getServiceTypesForDriver(
-        driver?.vehicle_category ?? 'taxi',
-        driver?.vehicle_type ?? 'bike',
+        driver?.vehicle_category,
+        driver?.vehicle_type,
         acceptBoth
     );
 
@@ -96,11 +106,18 @@ export default function BookingsScreen() {
         });
     }, []);
 
+    // ── Keep isOnline synced with driver context updates ─────────────────
+    useEffect(() => {
+        if (driver?.is_online !== undefined) {
+            setIsOnline(driver.is_online);
+        }
+    }, [driver?.is_online]);
+
     const toggleAcceptBoth = async (val: boolean) => {
         setAcceptBoth(val);
         await AsyncStorage.setItem(ACCEPT_BOTH_KEY, val ? 'true' : 'false');
         if (driver?.id) {
-            const types = getServiceTypesForDriver(driver.vehicle_category ?? 'taxi', driver.vehicle_type ?? 'bike', val);
+            const types = getServiceTypesForDriver(driver.vehicle_category, driver.vehicle_type, val);
             await setBackgroundTaskData(driver.id, types);
         }
     };
@@ -164,7 +181,11 @@ export default function BookingsScreen() {
 
     // ── Load rides + food/grocery + subscribe ─────────────────────────────
     const loadData = useCallback(async () => {
-        if (!driver?.id) return;
+        if (!driver?.id) {
+            setLoading(false);
+            setRefreshing(false);
+            return;
+        }
         setNetworkError(false);
         try {
             const currentCoords = coordsRef.current;
@@ -267,6 +288,15 @@ export default function BookingsScreen() {
             refreshSub.remove();
         };
     }, [loadData]);
+
+    // ── Resilient Polling Fallback ─────────────────────────────────────────────
+    useEffect(() => {
+        if (!isOnline || activeRide) return;
+        const interval = setInterval(() => {
+            loadData();
+        }, 10000);
+        return () => clearInterval(interval);
+    }, [isOnline, activeRide, loadData]);
 
     // ── Floating Widget Sync (Reacts to state changes) ───────────────────────
     useEffect(() => {
@@ -580,7 +610,7 @@ export default function BookingsScreen() {
                     </View>
                 )}
 
-                {/* Available ride */}
+                {/* Available transport rides */}
                 {isOnline && !activeRide && availableRides.length > 0 && (
                     <>
                         <View style={styles.sectionHeader}>
@@ -666,8 +696,18 @@ export default function BookingsScreen() {
                                 </View>
                             );
                         })}
+                    </>
+                )}
 
-                        {/* Available Food Orders */}
+                {/* Available Food Orders */}
+                {isOnline && !activeRide && availableFoodOrders.length > 0 && (
+                    <>
+                        <View style={styles.sectionHeader}>
+                            <Text style={styles.sectionTitle}>Food Delivery Requests</Text>
+                            <View style={[styles.newBadge, { backgroundColor: '#FF6B35' }]}>
+                                <Text style={styles.newBadgeText}>FOOD</Text>
+                            </View>
+                        </View>
                         {availableFoodOrders.map((fOrder) => (
                             <View key={fOrder.id} style={[styles.rideCard, { borderColor: '#FF6B35' }]}>
                                 <View style={styles.rideCardHeader}>
@@ -721,8 +761,18 @@ export default function BookingsScreen() {
                                 </TouchableOpacity>
                             </View>
                         ))}
+                    </>
+                )}
 
-                        {/* Available Grocery Orders */}
+                {/* Available Grocery Orders */}
+                {isOnline && !activeRide && availableGroceryOrders.length > 0 && (
+                    <>
+                        <View style={styles.sectionHeader}>
+                            <Text style={styles.sectionTitle}>Grocery Delivery Requests</Text>
+                            <View style={[styles.newBadge, { backgroundColor: '#10B981' }]}>
+                                <Text style={styles.newBadgeText}>GROCERY</Text>
+                            </View>
+                        </View>
                         {availableGroceryOrders.map((gOrder) => (
                             <View key={gOrder.id} style={[styles.rideCard, { borderColor: '#10B981' }]}>
                                 <View style={styles.rideCardHeader}>
