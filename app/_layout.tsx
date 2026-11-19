@@ -1,16 +1,28 @@
 import '@/config/i18n'; // Initialize i18n
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { GlobalOrderAlertModal } from '@/components/GlobalOrderAlertModal';
+import { GlobalRideAlertModal } from '@/components/GlobalRideAlertModal';
+import { GlobalStatusBanner } from '@/components/GlobalStatusBanner';
+import { supabase } from '@/config/supabase';
 import { AuthProvider, useAuth } from '@/contexts/auth-context';
-import '@/services/background-task'; // Register task-manager definition
-import { DriverService } from '@/services/driver.service';
+import '@/services/background-task'; // Register task-manager definitions
+import { markOrderInformedInBackground } from '@/services/background-task';
+import { DriverService, getServiceTypesForDriver, RIDE_COLUMNS } from '@/services/driver.service';
+import { FoodDriverService } from '@/services/food-driver.service';
+import { GroceryDriverService } from '@/services/grocery-driver.service';
+import { NativeBridgeService } from '@/services/native-bridge.service';
 import { NotificationEngine } from '@/services/notification-engine.service';
 import { NOTIFICATION_ACTIONS, NotificationService } from '@/services/notification.service';
+import { registerDriverPushToken } from '@/services/push-token.service';
+import { FoodOrder, GroceryOrder } from '@/types';
 import Constants from 'expo-constants';
 import { useFonts } from 'expo-font';
-import { Stack, router, useRootNavigationState } from 'expo-router';
+import * as Location from 'expo-location';
+import { router, Stack, useRootNavigationState } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useRef } from 'react';
-import { LogBox, Platform } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, AppState, LogBox } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import 'react-native-url-polyfill/auto';
 
@@ -24,29 +36,23 @@ LogBox.ignoreLogs([
 
 SplashScreen.preventAutoHideAsync();
 
-import { GlobalRideAlertModal } from '@/components/GlobalRideAlertModal';
-import { GlobalOrderAlertModal } from '@/components/GlobalOrderAlertModal';
-import { GlobalStatusBanner } from '@/components/GlobalStatusBanner';
-import { supabase } from '@/config/supabase';
-import { getServiceTypesForDriver, RIDE_COLUMNS } from '@/services/driver.service';
-import { FoodDriverService } from '@/services/food-driver.service';
-import { GroceryDriverService } from '@/services/grocery-driver.service';
-import { registerDriverPushToken } from '@/services/push-token.service';
-import { FoodOrder, GroceryOrder } from '@/types';
-import * as Location from 'expo-location';
-import { useState } from 'react';
-
 function RootContent() {
     const { driver, loading } = useAuth();
     const [incomingRide, setIncomingRide] = useState<any>(null);
-    const [incomingOrder, setIncomingOrder] = useState<{ domain: 'food' | 'grocery'; order: FoodOrder | GroceryOrder } | null>(null);
+    const [incomingOrder, setIncomingOrder] = useState<{
+        domain: 'food' | 'grocery';
+        order: FoodOrder | GroceryOrder;
+    } | null>(null);
     const rootNavState = useRootNavigationState();
-    // Track the last routed (driverId + rider_status) tuple to allow legitimate status transitions
-    // (e.g. pending -> verified, login/logout) while blocking redundant reroutes from GPS / is_online updates.
-    const lastRoutedKeyRef = useRef<string | null>(null);
 
+    // Track the last routed (driverId + rider_status) tuple to allow legitimate status transitions
+    // while blocking redundant reroutes from GPS / is_online updates.
+    const lastRoutedKeyRef = useRef<string | null>(null);
+    // Track processed notification response keys so cold-start + warm-start listeners never double-fire
+    const handledResponseKeysRef = useRef<Set<string>>(new Set());
+
+    // ─── 1. Authoritative Startup Routing & Active Work Recovery ─────────────
     useEffect(() => {
-        // Wait until navigation is fully mounted and ready before attempting to route
         if (!rootNavState?.key) return;
         if (loading) return;
 
@@ -62,48 +68,46 @@ function RootContent() {
         } else if (normalizedStatus === 'pending' || normalizedStatus === 'rejected') {
             setTimeout(() => router.replace('/(auth)/onboarding'), 0);
         } else if (normalizedStatus === 'verified') {
-            // Async check for required permissions before going to bookings
             (async () => {
                 try {
+                    // Always register/refresh FCM push token for verified partners
+                    registerDriverPushToken(driver.id).catch(console.warn);
+
                     const fg = await Location.getForegroundPermissionsAsync();
                     const bg = await Location.getBackgroundPermissionsAsync();
-                    const notif = await import('expo-notifications').then(n => n.getPermissionsAsync());
-                    let overlay = true;
-                    if (Platform.OS === 'android') {
-                        const { NativeBridgeService } = await import('@/services/native-bridge.service');
-                        overlay = await NativeBridgeService.checkDrawOverAppsPermission();
-                    }
+                    const notif = await import('expo-notifications').then((n) =>
+                        n.getPermissionsAsync()
+                    );
 
                     if (
                         fg.status !== 'granted' ||
                         bg.status !== 'granted' ||
-                        notif.status !== 'granted' ||
-                        !overlay
+                        notif.status !== 'granted'
                     ) {
                         setTimeout(() => router.replace('/(auth)/permissions'), 0);
-                    } else {
-                        // Register FCM push token so Edge Function can notify this device
-                        registerDriverPushToken(driver.id).catch(console.warn);
-
-                        // Check for in-progress active work across all 3 verticals
-                        const [activeRide, activeFood, activeGrocery] = await Promise.all([
-                            DriverService.getActiveRide(driver.id).catch(() => null),
-                            FoodDriverService.getActiveFoodOrder(driver.id).catch(() => null),
-                            GroceryDriverService.getActiveGroceryOrder(driver.id).catch(() => null),
-                        ]);
-
-                        if (activeRide) {
-                            setTimeout(() => router.replace(`/active-ride/${activeRide.id}` as any), 0);
-                        } else if (activeFood) {
-                            setTimeout(() => router.replace(`/active-food/${activeFood.id}` as any), 0);
-                        } else if (activeGrocery) {
-                            setTimeout(() => router.replace(`/active-grocery/${activeGrocery.id}` as any), 0);
-                        } else {
-                            setTimeout(() => router.replace('/(tabs)/bookings'), 0);
-                        }
+                        return;
                     }
-                } catch (e) {
-                    // Fallback
+
+                    // Check for in-progress active work across all 3 verticals
+                    const [activeRide, activeFood, activeGrocery] = await Promise.all([
+                        DriverService.getActiveRide(driver.id).catch(() => null),
+                        FoodDriverService.getActiveFoodOrder(driver.id).catch(() => null),
+                        GroceryDriverService.getActiveGroceryOrder(driver.id).catch(() => null),
+                    ]);
+
+                    if (activeRide) {
+                        setTimeout(() => router.replace(`/active-ride/${activeRide.id}` as any), 0);
+                    } else if (activeFood) {
+                        setTimeout(() => router.replace(`/active-food/${activeFood.id}` as any), 0);
+                    } else if (activeGrocery) {
+                        setTimeout(
+                            () => router.replace(`/active-grocery/${activeGrocery.id}` as any),
+                            0
+                        );
+                    } else {
+                        setTimeout(() => router.replace('/(tabs)/bookings'), 0);
+                    }
+                } catch {
                     setTimeout(() => router.replace('/(tabs)/bookings'), 0);
                 }
             })();
@@ -112,7 +116,51 @@ function RootContent() {
         }
     }, [driver, loading, rootNavState?.key]);
 
-    // Handle Realtime pending rides & orders globally when online ───
+    // ─── 2. Keep Persistent Online Foreground Service Synchronized with DB ───
+    useEffect(() => {
+        if (!driver?.id) return;
+        const normalizedStatus = (driver.rider_status ?? '').trim().toLowerCase();
+        if (!driver.is_driver || normalizedStatus !== 'verified') {
+            NotificationService.stopOnlineForegroundService().catch(() => {});
+            return;
+        }
+
+        let cancelled = false;
+        (async () => {
+            if (driver.is_online) {
+                let acceptBoth = true;
+                try {
+                    const AS = await import('@react-native-async-storage/async-storage');
+                    const val = await AS.default.getItem('@quickora_accept_both');
+                    acceptBoth = val !== 'false';
+                } catch {
+                    // Use default
+                }
+                if (cancelled) return;
+                const isBike = (driver.vehicle_type ?? '').trim().toLowerCase() === 'bike';
+                const serviceTypes = getServiceTypesForDriver(
+                    driver.vehicle_category ?? 'taxi',
+                    driver.vehicle_type ?? 'bike',
+                    acceptBoth
+                );
+                await NotificationService.startOnlineForegroundService(
+                    driver.id,
+                    serviceTypes,
+                    isBike,
+                    "You're Online — Searching for orders"
+                );
+                NativeBridgeService.setAppForegroundState(AppState.currentState === 'active');
+            } else {
+                await NotificationService.stopOnlineForegroundService();
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [driver?.id, driver?.is_online, driver?.rider_status, driver?.vehicle_type, driver?.vehicle_category]);
+
+    // ─── 3. Handle Realtime + Resilient Polling for Pending Rides & Orders ───
     useEffect(() => {
         if (!driver?.id || !driver.is_online) {
             setIncomingRide(null);
@@ -124,17 +172,18 @@ function RootContent() {
         let rideChannel: any = null;
         let foodChannel: any = null;
         let groceryChannel: any = null;
+        let pollTimer: ReturnType<typeof setInterval> | null = null;
+        let appStateSub: { remove: () => void } | null = null;
 
         const initRealtime = async () => {
             try {
-                // Get acceptBoth preference from AsyncStorage (default true so Bike partners get both Taxi & Logistics)
                 let acceptBoth = true;
                 try {
                     const AS = await import('@react-native-async-storage/async-storage');
                     const acceptBothVal = await AS.default.getItem('@quickora_accept_both');
                     acceptBoth = acceptBothVal !== 'false';
                 } catch {
-                    // AsyncStorage failure is non-critical, continue with default
+                    // Continue with default
                 }
 
                 const isBike = (driver.vehicle_type ?? '').trim().toLowerCase() === 'bike';
@@ -146,32 +195,90 @@ function RootContent() {
 
                 if (!isMounted) return;
 
+                const checkPendingWork = async () => {
+                    if (!isMounted) return;
+                    try {
+                        let activeRide = null;
+                        try {
+                            activeRide = await DriverService.getActiveRide(driver.id);
+                        } catch (activeErr: any) {
+                            if (activeErr?.message === 'NETWORK_ERROR') return;
+                        }
+                        if (activeRide) {
+                            if (isMounted) {
+                                setIncomingRide(null);
+                                setIncomingOrder(null);
+                            }
+                            return;
+                        }
+
+                        const rides = await DriverService.getAvailableRides(
+                            serviceTypes,
+                            driver.current_lat,
+                            driver.current_lng
+                        );
+                        const eligibleRides = (rides ?? []).filter(
+                            (r) => !NotificationEngine.isHandled(r.id)
+                        );
+                        if (eligibleRides.length > 0 && isMounted) {
+                            setIncomingRide(eligibleRides[0]);
+                            return;
+                        } else if (isMounted) {
+                            setIncomingRide(null);
+                        }
+
+                        if (isBike && isMounted) {
+                            const [foodOrders, groceryOrders] = await Promise.all([
+                                FoodDriverService.getAvailableOrders(
+                                    driver.current_lat,
+                                    driver.current_lng
+                                ).catch(() => []),
+                                GroceryDriverService.getAvailableOrders(
+                                    driver.current_lat,
+                                    driver.current_lng
+                                ).catch(() => []),
+                            ]);
+                            const eligibleFood = (foodOrders ?? []).filter(
+                                (o) => !NotificationEngine.isHandled(o.id)
+                            );
+                            if (eligibleFood.length > 0 && isMounted) {
+                                setIncomingOrder({ domain: 'food', order: eligibleFood[0] });
+                                return;
+                            }
+                            const eligibleGrocery = (groceryOrders ?? []).filter(
+                                (o) => !NotificationEngine.isHandled(o.id)
+                            );
+                            if (eligibleGrocery.length > 0 && isMounted) {
+                                setIncomingOrder({ domain: 'grocery', order: eligibleGrocery[0] });
+                                return;
+                            }
+                            if (isMounted) {
+                                setIncomingOrder(null);
+                            }
+                        }
+                    } catch (err) {
+                        console.warn('[Layout] Error checking pending work:', err);
+                    }
+                };
+
+                // Initial check immediately when going online
+                checkPendingWork();
+
+                // Resilient 6-second polling loop (ensures incoming alerts fire even if WebSocket drops while minimized)
+                pollTimer = setInterval(checkPendingWork, 6000);
+
+                // Re-check immediately on AppState transitions & sync Native Overlay Foreground State
+                appStateSub = AppState.addEventListener('change', (nextState) => {
+                    NativeBridgeService.setAppForegroundState(nextState === 'active');
+                    if (nextState === 'active') {
+                        checkPendingWork();
+                    }
+                });
+
                 // 1. Transport Realtime Channel
                 rideChannel = DriverService.subscribeToPendingRides(
                     async () => {
-                        if (!isMounted) return;
-                        try {
-                            // Check if driver has an active ride (guard against network errors)
-                            let activeRide = null;
-                            try {
-                                activeRide = await DriverService.getActiveRide(driver.id);
-                            } catch (activeErr: any) {
-                                if (activeErr?.message === 'NETWORK_ERROR') return;
-                            }
-                            if (activeRide) {
-                                setIncomingRide(null);
-                                return;
-                            }
-
-                            const rides = await DriverService.getAvailableRides(serviceTypes, driver.current_lat, driver.current_lng);
-                            if (rides && rides.length > 0 && isMounted) {
-                                setIncomingRide(rides[0]);
-                            } else if (isMounted) {
-                                setIncomingRide(null);
-                            }
-                        } catch (rideErr) {
-                            console.warn('[Layout] Error processing incoming rides:', rideErr);
-                        }
+                        await checkPendingWork();
                     },
                     serviceTypes,
                     () => ({ lat: driver.current_lat, lng: driver.current_lng })
@@ -180,45 +287,15 @@ function RootContent() {
                 // 2. Food & Grocery Realtime Channels for bike partners
                 if (isBike) {
                     foodChannel = FoodDriverService.subscribeToPendingOrders(
-                        async (orders) => {
-                            if (!isMounted) return;
-                            try {
-                                let activeRide = await DriverService.getActiveRide(driver.id);
-                                let activeFood = await FoodDriverService.getActiveFoodOrder(driver.id);
-                                if (activeRide || activeFood) {
-                                    setIncomingOrder(null);
-                                    return;
-                                }
-                                if (orders && orders.length > 0 && isMounted) {
-                                    setIncomingOrder({ domain: 'food', order: orders[0] });
-                                } else if (isMounted) {
-                                    setIncomingOrder(null);
-                                }
-                            } catch (err) {
-                                console.warn('[Layout] Error processing incoming food orders:', err);
-                            }
+                        async () => {
+                            await checkPendingWork();
                         },
                         () => ({ lat: driver.current_lat, lng: driver.current_lng })
                     );
 
                     groceryChannel = GroceryDriverService.subscribeToPendingOrders(
-                        async (orders) => {
-                            if (!isMounted) return;
-                            try {
-                                let activeRide = await DriverService.getActiveRide(driver.id);
-                                let activeGrocery = await GroceryDriverService.getActiveGroceryOrder(driver.id);
-                                if (activeRide || activeGrocery) {
-                                    setIncomingOrder(null);
-                                    return;
-                                }
-                                if (orders && orders.length > 0 && isMounted) {
-                                    setIncomingOrder({ domain: 'grocery', order: orders[0] });
-                                } else if (isMounted) {
-                                    setIncomingOrder(null);
-                                }
-                            } catch (err) {
-                                console.warn('[Layout] Error processing incoming grocery orders:', err);
-                            }
+                        async () => {
+                            await checkPendingWork();
                         },
                         () => ({ lat: driver.current_lat, lng: driver.current_lng })
                     );
@@ -232,158 +309,391 @@ function RootContent() {
 
         return () => {
             isMounted = false;
+            if (pollTimer) clearInterval(pollTimer);
+            appStateSub?.remove();
             rideChannel?.unsubscribe?.();
             foodChannel?.unsubscribe?.();
             groceryChannel?.unsubscribe?.();
         };
     }, [driver?.id, driver?.is_online, driver?.vehicle_type, driver?.vehicle_category]);
 
-    // Handle Notification Actions and Foreground Reception ───
+    // ─── 4. Unified Notification Tap / Action Processor (Cold + Warm Start) ──
+    const processNotificationResponse = useCallback(
+        async (response: any) => {
+            if (!response || !driver?.id) return;
+
+            const notifId = response.notification?.request?.identifier ?? 'unknown';
+            const actionId = response.actionIdentifier ?? 'default';
+            const responseKey = `${notifId}:${actionId}`;
+
+            if (handledResponseKeysRef.current.has(responseKey)) {
+                return;
+            }
+            handledResponseKeysRef.current.add(responseKey);
+
+            const data = (response.notification?.request?.content?.data ?? {}) as any;
+            const msgType = data.type;
+            const domain: 'transport' | 'food' | 'grocery' =
+                data.domain ||
+                (msgType === 'NEW_FOOD_ORDER'
+                    ? 'food'
+                    : msgType === 'NEW_GROCERY_ORDER'
+                      ? 'grocery'
+                      : 'transport');
+            const targetId = data.rideId || data.orderId;
+
+            console.log('[Layout] Processing notification interaction:', {
+                actionId,
+                msgType,
+                domain,
+                targetId,
+            });
+
+            // A. Partner tapped Decline action in notification shade
+            if (actionId === NOTIFICATION_ACTIONS.DECLINE) {
+                if (targetId) {
+                    NotificationEngine.markHandled(targetId);
+                    markOrderInformedInBackground(String(targetId)).catch(() => {});
+                }
+                NotificationEngine.stop();
+                setIncomingRide(null);
+                setIncomingOrder(null);
+                return;
+            }
+
+            // B. Partner tapped Accept action button directly from notification shade
+            if (actionId === NOTIFICATION_ACTIONS.ACCEPT && targetId) {
+                NotificationEngine.markHandled(targetId);
+                NotificationEngine.stop();
+                markOrderInformedInBackground(String(targetId)).catch(() => {});
+                setIncomingRide(null);
+                setIncomingOrder(null);
+
+                try {
+                    if (domain === 'food') {
+                        const claimed = await FoodDriverService.claimOrder(targetId, driver.id);
+                        if (claimed) {
+                            router.replace(`/active-food/${targetId}` as any);
+                            return;
+                        }
+                    } else if (domain === 'grocery') {
+                        const claimed = await GroceryDriverService.claimOrder(targetId, driver.id);
+                        if (claimed) {
+                            router.replace(`/active-grocery/${targetId}` as any);
+                            return;
+                        }
+                    } else {
+                        const ride = await DriverService.acceptRide(targetId, driver.id);
+                        if (ride) {
+                            router.replace(`/active-ride/${targetId}` as any);
+                            return;
+                        }
+                    }
+                } catch (e: any) {
+                    Alert.alert(
+                        'Order No Longer Available',
+                        e?.message || 'This order was already accepted by another partner or cancelled.'
+                    );
+                    router.replace('/(tabs)/bookings');
+                    return;
+                }
+            }
+
+            // C. Partner tapped the notification body or "View Order" action
+            const isIncomingOrderType =
+                msgType === 'NEW_BOOKING' ||
+                msgType === 'NEW_FOOD_ORDER' ||
+                msgType === 'NEW_GROCERY_ORDER';
+
+            if (isIncomingOrderType && targetId) {
+                try {
+                    if (domain === 'food' || domain === 'grocery') {
+                        const order =
+                            domain === 'food'
+                                ? await FoodDriverService.getOrderById(targetId)
+                                : await GroceryDriverService.getOrderById(targetId);
+
+                        if (!order) {
+                            Alert.alert(
+                                'Order Unavailable',
+                                'This delivery request is no longer available.'
+                            );
+                            router.replace('/(tabs)/bookings');
+                            return;
+                        }
+
+                        if (order.driver_id === driver.id && order.status === 'out_for_delivery') {
+                            router.replace(`/active-${domain}/${targetId}` as any);
+                            return;
+                        }
+
+                        if (order.status === 'preparing' && !order.driver_id) {
+                            router.replace('/(tabs)/bookings');
+                            setIncomingOrder({ domain, order });
+                            return;
+                        }
+
+                        NotificationEngine.markHandled(targetId);
+                        NotificationEngine.stop();
+                        Alert.alert(
+                            'Order Already Taken',
+                            'Another delivery partner has already accepted this order.'
+                        );
+                        router.replace('/(tabs)/bookings');
+                        return;
+                    } else {
+                        const { data: ride } = await supabase
+                            .from('rides')
+                            .select(RIDE_COLUMNS)
+                            .eq('id', targetId)
+                            .maybeSingle();
+
+                        if (!ride) {
+                            Alert.alert('Order Unavailable', 'This ride request was cancelled.');
+                            router.replace('/(tabs)/bookings');
+                            return;
+                        }
+
+                        if (
+                            ride.driver_id === driver.id &&
+                            ['accepted', 'picked_up', 'on_ride'].includes(ride.status)
+                        ) {
+                            router.replace(`/active-ride/${targetId}` as any);
+                            return;
+                        }
+
+                        if (ride.status === 'pending' && !ride.driver_id) {
+                            router.replace('/(tabs)/bookings');
+                            setIncomingRide(ride);
+                            return;
+                        }
+
+                        NotificationEngine.markHandled(targetId);
+                        NotificationEngine.stop();
+                        Alert.alert(
+                            'Order Already Taken',
+                            'Another partner has already accepted this request or it was cancelled.'
+                        );
+                        router.replace('/(tabs)/bookings');
+                        return;
+                    }
+                } catch (err) {
+                    console.warn('[Layout] Failed to fetch order from notification tap:', err);
+                    router.replace('/(tabs)/bookings');
+                    return;
+                }
+            }
+
+            if (data.url) {
+                setIncomingRide(null);
+                setIncomingOrder(null);
+                router.replace(data.url);
+            } else {
+                router.replace('/(tabs)/bookings');
+            }
+        },
+        [driver?.id]
+    );
+
+    // ─── 5. Register Cold-Start & Warm-Start Notification + Native Overlay Listeners ──
+    const consumeNativeOverlayAction = useCallback(async () => {
+        if (!driver?.id) return;
+        const pending = await NativeBridgeService.consumePendingOrderAction();
+        if (!pending || !pending.orderId) return;
+
+        const { orderId, domain, action } = pending;
+        console.log('[Layout] Processing Native Floating Overlay order action:', pending);
+
+        await processNotificationResponse({
+            notification: {
+                request: {
+                    identifier: `native_overlay_${orderId}_${Date.now()}`,
+                    content: {
+                        data: {
+                            type:
+                                domain === 'food'
+                                    ? 'NEW_FOOD_ORDER'
+                                    : domain === 'grocery'
+                                      ? 'NEW_GROCERY_ORDER'
+                                      : 'NEW_BOOKING',
+                            domain,
+                            rideId: domain === 'transport' ? orderId : undefined,
+                            orderId,
+                        },
+                    },
+                },
+            },
+            actionIdentifier:
+                action === 'accept' ? NOTIFICATION_ACTIONS.ACCEPT : NOTIFICATION_ACTIONS.VIEW,
+        });
+    }, [driver?.id, processNotificationResponse]);
+
     useEffect(() => {
-        if (IS_EXPO_GO) return; // Push notifications not supported in Expo Go SDK 53+
-        if (!driver?.id) return; // Only listen when a driver is logged in
+        if (!driver?.id || !rootNavState?.key) return;
 
         let isMounted = true;
         let subResponse: { remove: () => void } | null = null;
         let subReceived: { remove: () => void } | null = null;
 
-        import('expo-notifications').then((N) => {
-            if (!isMounted) return;
+        // Check if partner tapped Accept / View on the Native Floating Order Receiver Overlay Card
+        consumeNativeOverlayAction().catch(() => {});
+        const overlayAppStateSub = AppState.addEventListener('change', (nextState) => {
+            if (nextState === 'active' && isMounted) {
+                consumeNativeOverlayAction().catch(() => {});
+            }
+        });
 
-            // 1. Response (Click/Action) Listener — fires when driver taps FCM notification
-            subResponse = N.addNotificationResponseReceivedListener(async (response) => {
-                const data = response.notification.request.content.data as any;
-                const actionId = response.actionIdentifier;
-                const rideId = data.rideId;
+        import('expo-notifications')
+            .then(async (N) => {
+                if (!isMounted) return;
 
-                console.log('[Layout] Notification tapped:', { actionId, type: data.type });
-
-                if (actionId === NOTIFICATION_ACTIONS.ACCEPT && rideId && driver.id) {
-                    // Driver tapped "Accept" action button directly from notification tray
-                    try {
-                        const ride = await DriverService.acceptRide(rideId, driver.id);
-                        if (ride) {
-                            setIncomingRide(null);
-                            router.push(`/active-ride/${rideId}`);
-                        }
-                    } catch (e: any) {
-                        console.error('[Layout] Accept via notification action failed:', e.message);
-                        router.push(`/(tabs)/bookings`);
+                // 1. Cold-Start Check: inspect if the app was launched from a killed state by tapping a notification
+                try {
+                    const lastResponse = await N.getLastNotificationResponseAsync();
+                    if (lastResponse && isMounted) {
+                        await processNotificationResponse(lastResponse);
                     }
-                } else if (data.type === 'NEW_BOOKING' && rideId && driver.is_online) {
-                    // Driver tapped the notification body — check if ride still available,
-                    // then show the ride alert modal
-                    try {
-                        const { data: ride } = await supabase
-                            .from('rides')
-                            .select(RIDE_COLUMNS)
-                            .eq('id', rideId)
-                            .eq('status', 'pending')
-                            .is('driver_id', null)
-                            .single();
-
-                        if (ride && isMounted) {
-                            setIncomingRide(ride);
-                        } else {
-                            // Ride already taken — just navigate to bookings
-                            router.push('/(tabs)/bookings');
-                        }
-                    } catch (err) {
-                        console.warn('[Layout] Failed to fetch ride from notification tap:', err);
-                        router.push('/(tabs)/bookings');
-                    }
-                } else if (data.url) {
-                    setIncomingRide(null);
-                    router.push(data.url);
-                } else {
-                    router.push('/(tabs)/bookings');
+                } catch {
+                    // Ignore if unavailable
                 }
-            });
 
-            // 2. Foreground Received Listener
-            subReceived = N.addNotificationReceivedListener(async (notification) => {
-                const data = notification.request.content.data as any;
-                if (data?.type === 'NEW_BOOKING' && data?.rideId && driver.is_online) {
+                if (!isMounted) return;
+
+                // 2. Warm-Start Response Listener: fires when driver taps notification or action button
+                subResponse = N.addNotificationResponseReceivedListener((response) => {
+                    processNotificationResponse(response);
+                });
+
+                // 3. Foreground Received Listener: syncs incoming push immediately to in-app modal
+                subReceived = N.addNotificationReceivedListener(async (notification) => {
+                    const data = (notification.request.content.data ?? {}) as any;
+                    if (!driver.is_online) return;
+
+                    const msgType = data?.type;
+                    const targetId = data?.rideId || data?.orderId;
+                    if (!targetId || NotificationEngine.isHandled(targetId)) return;
+
                     try {
-                        const activeRide = await DriverService.getActiveRide(driver.id);
-                        if (!activeRide) {
+                        const [activeRide, activeFood, activeGrocery] = await Promise.all([
+                            DriverService.getActiveRide(driver.id),
+                            FoodDriverService.getActiveFoodOrder(driver.id),
+                            GroceryDriverService.getActiveGroceryOrder(driver.id),
+                        ]);
+                        if (activeRide || activeFood || activeGrocery) return;
+
+                        if (msgType === 'NEW_FOOD_ORDER' || data?.domain === 'food') {
+                            const order = await FoodDriverService.getOrderById(targetId);
+                            if (order && order.status === 'preparing' && !order.driver_id && isMounted) {
+                                setIncomingOrder({ domain: 'food', order });
+                            }
+                        } else if (msgType === 'NEW_GROCERY_ORDER' || data?.domain === 'grocery') {
+                            const order = await GroceryDriverService.getOrderById(targetId);
+                            if (order && order.status === 'preparing' && !order.driver_id && isMounted) {
+                                setIncomingOrder({ domain: 'grocery', order });
+                            }
+                        } else if (msgType === 'NEW_BOOKING') {
                             const { data: ride } = await supabase
                                 .from('rides')
                                 .select(RIDE_COLUMNS)
-                                .eq('id', data.rideId)
-                                .single();
-                            if (ride && ride.status === 'pending' && isMounted) {
+                                .eq('id', targetId)
+                                .maybeSingle();
+                            if (ride && ride.status === 'pending' && !ride.driver_id && isMounted) {
                                 setIncomingRide(ride);
                             }
                         }
                     } catch (err) {
-                        console.error('Error fetching foreground notification ride details:', err);
+                        console.error('Error fetching foreground notification order details:', err);
                     }
-                }
-            });
-        }).catch(() => { }); // silently skip if unavailable
+                });
+            })
+            .catch(() => {});
 
         return () => {
             isMounted = false;
+            overlayAppStateSub.remove();
             subResponse?.remove();
             subReceived?.remove();
         };
-    }, [driver?.id, driver?.is_online]);
+    }, [driver?.id, driver?.is_online, rootNavState?.key, processNotificationResponse, consumeNativeOverlayAction]);
 
-    // ─── Continuous Notification Engine ──────────────────────────────────────
-    // Start the engine whenever a new pending ride appears; stop it when cleared.
+    // ─── 6. Synchronize NotificationEngine Across All Incoming Domains ───────
     useEffect(() => {
-        if (incomingRide) {
+        if (incomingRide?.id) {
+            markOrderInformedInBackground(String(incomingRide.id)).catch(() => {});
             NotificationEngine.start(incomingRide);
+        } else if (incomingOrder?.order?.id) {
+            markOrderInformedInBackground(String(incomingOrder.order.id)).catch(() => {});
+            NotificationEngine.startOrder(incomingOrder.order, incomingOrder.domain);
         } else {
             NotificationEngine.stop();
         }
-    }, [incomingRide]);
+    }, [incomingRide, incomingOrder]);
 
+    // ─── 7. Modal Accept / Decline Handlers ──────────────────────────────────
     const handleAcceptRide = async (rideId: string) => {
         if (!driver?.id) return;
-        NotificationEngine.stop();   // Stop immediately — don't wait for state update
+        NotificationEngine.markHandled(rideId);
+        NotificationEngine.stop();
+        markOrderInformedInBackground(String(rideId)).catch(() => {});
+
         try {
             const ride = await DriverService.acceptRide(rideId, driver.id);
             setIncomingRide(null);
             if (ride) {
-                router.push(`/active-ride/${rideId}`);
+                router.replace(`/active-ride/${rideId}` as any);
             }
         } catch (e: any) {
             setIncomingRide(null);
-            console.error('Accept global ride failed:', e.message);
+            Alert.alert(
+                'Order No Longer Available',
+                e?.message || 'This ride was already accepted by another partner or cancelled.'
+            );
         }
     };
 
     const handleDeclineRide = () => {
-        NotificationEngine.stop();   // Stop immediately
+        if (incomingRide?.id) {
+            NotificationEngine.markHandled(incomingRide.id);
+            markOrderInformedInBackground(String(incomingRide.id)).catch(() => {});
+        }
+        NotificationEngine.stop();
         setIncomingRide(null);
     };
 
     const handleAcceptOrder = async (orderId: string, domain: 'food' | 'grocery') => {
         if (!driver?.id) return;
+        NotificationEngine.markHandled(orderId);
         NotificationEngine.stop();
+        markOrderInformedInBackground(String(orderId)).catch(() => {});
+
         try {
             if (domain === 'food') {
                 const claimed = await FoodDriverService.claimOrder(orderId, driver.id);
                 setIncomingOrder(null);
                 if (claimed) {
-                    router.push(`/active-food/${orderId}` as any);
+                    router.replace(`/active-food/${orderId}` as any);
                 }
             } else {
                 const claimed = await GroceryDriverService.claimOrder(orderId, driver.id);
                 setIncomingOrder(null);
                 if (claimed) {
-                    router.push(`/active-grocery/${orderId}` as any);
+                    router.replace(`/active-grocery/${orderId}` as any);
                 }
             }
         } catch (e: any) {
             setIncomingOrder(null);
-            console.error('Accept order failed:', e.message);
+            Alert.alert(
+                'Order No Longer Available',
+                e?.message || 'This delivery order was already accepted by another partner.'
+            );
         }
     };
 
     const handleDeclineOrder = () => {
+        if (incomingOrder?.order?.id) {
+            NotificationEngine.markHandled(incomingOrder.order.id);
+            markOrderInformedInBackground(String(incomingOrder.order.id)).catch(() => {});
+        }
         NotificationEngine.stop();
         setIncomingOrder(null);
     };
@@ -425,8 +735,6 @@ function RootContent() {
     );
 }
 
-import { ErrorBoundary } from '@/components/ErrorBoundary';
-
 export default function RootLayout() {
     const [loaded, error] = useFonts({
         'Satoshi-Regular': require('../assets/fonts/Satoshi-Regular.otf'),
@@ -438,9 +746,9 @@ export default function RootLayout() {
     useEffect(() => {
         if (loaded || error) SplashScreen.hideAsync();
         if (loaded) {
-            NotificationService.init(); // Boot engine
+            NotificationService.init();
             const { OfflineQueueService } = require('@/services/offline-queue.service');
-            OfflineQueueService.init(); // Boot offline retry engine
+            OfflineQueueService.init();
         }
     }, [loaded, error]);
 

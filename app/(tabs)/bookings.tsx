@@ -1,14 +1,18 @@
 import { supabase } from '@/config/supabase';
 import { colors, Fonts } from '@/constants/colors';
 import { useAuth } from '@/contexts/auth-context';
-import { BACKGROUND_RIDE_TASK, setBackgroundTaskData } from '@/services/background-task';
+import { setBackgroundTaskData } from '@/services/background-task';
 import { DriverService, getServiceTypesForDriver } from '@/services/driver.service';
 import { FoodDriverService } from '@/services/food-driver.service';
 import { GroceryDriverService } from '@/services/grocery-driver.service';
 import { NativeBridgeService } from '@/services/native-bridge.service';
+import { NotificationEngine } from '@/services/notification-engine.service';
+import { NotificationService } from '@/services/notification.service';
+import { registerDriverPushToken } from '@/services/push-token.service';
 import { FoodOrder, GroceryOrder, Ride } from '@/types';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
 import * as Location from 'expo-location';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -17,6 +21,7 @@ import {
     ActivityIndicator, Alert,
     AppState, AppStateStatus,
     DeviceEventEmitter,
+    Linking,
     RefreshControl,
     ScrollView,
     StyleSheet,
@@ -121,7 +126,7 @@ export default function BookingsScreen() {
                 driver.vehicle_type ?? 'bike',
                 val
             );
-            await setBackgroundTaskData(driver.id, types);
+            await setBackgroundTaskData(driver.id, types, isBikeDriver, isOnline);
         }
     };
 
@@ -273,21 +278,34 @@ export default function BookingsScreen() {
         return () => { sub.unsubscribe?.(); };
     }, [activeRide?.id]);
 
-    // ── AppState & Widget Refresh listener ────────────────────────────────────
+    // ── AppState, NetInfo Recovery & Widget Refresh listener ────────────────
     useEffect(() => {
-        const sub = AppState.addEventListener('change', (nextAppState) => {
+        const sub = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
             if (nextAppState === 'active') {
                 loadData();
             }
         });
-        
+
+        let wasDisconnected = false;
+        const netSub = NetInfo.addEventListener((state) => {
+            if (!state.isConnected) {
+                wasDisconnected = true;
+                setNetworkError(true);
+            } else if (wasDisconnected) {
+                wasDisconnected = false;
+                setNetworkError(false);
+                loadData();
+            }
+        });
+
         // Listen for manual refresh from the native floating widget
         const refreshSub = DeviceEventEmitter.addListener('onWidgetRefresh', () => {
             loadData();
         });
-        
+
         return () => {
             sub.remove();
+            netSub();
             refreshSub.remove();
         };
     }, [loadData]);
@@ -308,18 +326,22 @@ export default function BookingsScreen() {
         const firstAvailable = availableRides[0];
         
         if (activeRide) {
-            // If there's an active ride (accepted/on_ride)
+            // If there's an active ride (accepted/on_ride), keep widget quiet in active state
             NativeBridgeService.updateFloatingWidgetData(JSON.stringify({
-                status: 'order',
-                pickup: activeRide.pickup_address,
-                fare: `₹${activeRide.fare}`
+                status: 'searching',
+                activeRideId: activeRide.id,
             }));
-        } else if (firstAvailable) {
-            // If there's a new incoming request ringing
+        } else if (firstAvailable && !NotificationEngine.isHandled(firstAvailable.id)) {
+            // If there's a new incoming request
             NativeBridgeService.updateFloatingWidgetData(JSON.stringify({
                 status: 'order',
+                orderId: firstAvailable.id,
+                domain: 'transport',
+                serviceType: firstAvailable.service_type,
                 pickup: firstAvailable.pickup_address,
-                fare: `₹${firstAvailable.fare}`
+                drop: firstAvailable.drop_address,
+                fare: `₹${firstAvailable.fare}`,
+                distance: firstAvailable.distance_km ? `${firstAvailable.distance_km} km` : '',
             }));
         } else {
             // Searching
@@ -332,6 +354,18 @@ export default function BookingsScreen() {
     // ── Online toggle ─────────────────────────────────────────────────────
     const toggleOnline = async (value: boolean) => {
         if (!driver?.id) return;
+
+        const isVerified =
+            driver.is_driver &&
+            (driver.rider_status ?? '').trim().toLowerCase() === 'verified';
+        if (value && !isVerified) {
+            Alert.alert(
+                'Verification Required',
+                'Your partner profile must be verified before going online to receive orders.'
+            );
+            return;
+        }
+
         // Block going offline/logout while active ride exists
         if (!value && activeRide) {
             Alert.alert(
@@ -347,57 +381,69 @@ export default function BookingsScreen() {
         }
 
         if (value) {
-            const hasOverlayPermission = await NativeBridgeService.checkDrawOverAppsPermission();
-            if (!hasOverlayPermission) {
-                Alert.alert(
-                    'Overlay Permission Required',
-                    'Quickora needs "Display over other apps" permission to show you new order requests while you use other apps.',
-                    [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'Enable', onPress: () => NativeBridgeService.requestDrawOverAppsPermission() }
-                    ]
-                );
-                return;
+            // Verify notification permission so background alerts work reliably
+            const hasNotifPerm = await NotificationService.hasNotificationPermission();
+            if (!hasNotifPerm) {
+                const granted = await NotificationService.requestPermissions();
+                if (!granted) {
+                    Alert.alert(
+                        'Notifications Disabled',
+                        'Order alert notifications are disabled. Enable notifications in Android Settings so you hear incoming order alerts while QPartner is in the background.',
+                        [
+                            { text: 'Continue Anyway', style: 'cancel' },
+                            { text: 'Open Settings', onPress: () => Linking.openSettings() },
+                        ]
+                    );
+                }
+            }
+
+            if (NativeBridgeService.isNativeModuleAvailable()) {
+                const canDraw = await NativeBridgeService.checkDrawOverAppsPermission();
+                if (!canDraw) {
+                    Alert.alert(
+                        'Enable Floating Order Card',
+                        'Allow QPartner to display over other apps so incoming order cards pop up on your screen even when QPartner is closed or you are using another app.',
+                        [
+                            { text: 'Later', style: 'cancel' },
+                            {
+                                text: 'Enable Now',
+                                onPress: () => NativeBridgeService.requestDrawOverAppsPermission(),
+                            },
+                        ]
+                    );
+                }
             }
         }
 
         setIsOnline(value);
-        await DriverService.setOnlineStatus(driver.id, value, driverLat, driverLng);
-        if (driver) await setDriverData({ ...driver, is_online: value });
+        try {
+            await DriverService.setOnlineStatus(driver.id, value, driverLat, driverLng);
+            if (driver) await setDriverData({ ...driver, is_online: value });
+        } catch (dbErr: any) {
+            setIsOnline(!value);
+            Alert.alert('Connection Error', 'Could not update your online status. Please check your internet connection.');
+            return;
+        }
 
-        // Handle Background Task ─────────
+        // Handle Foreground Service & Persistent Online Notification ─────────
         try {
             if (value) {
-                NativeBridgeService.startFloatingWidget();
+                // Ensure FCM token is fresh in DB for server-side push dispatch
+                registerDriverPushToken(driver.id).catch(console.warn);
 
-                // 1. Refresh background task metadata
-                await setBackgroundTaskData(driver.id, serviceTypes);
-
-                // 2. Start location task
-                const { status } = await Location.requestBackgroundPermissionsAsync();
-                if (status === 'granted') {
-                    await Location.startLocationUpdatesAsync(BACKGROUND_RIDE_TASK, {
-                        accuracy: Location.Accuracy.Balanced,
-                        timeInterval: 5000, // 5 seconds
-                        distanceInterval: 0, // Don't require movement
-                        foregroundService: {
-                            notificationTitle: 'Quickora Driver Online',
-                            notificationBody: 'Searching for nearby rides...',
-                            notificationColor: colors.primary,
-                        },
-                        pausesUpdatesAutomatically: false,
-                    });
-                } else {
-                    Alert.alert('Permission Required', 'Background location is needed to receive bookings while the app is closed.');
-                }
+                await NotificationService.startOnlineForegroundService(
+                    driver.id,
+                    serviceTypes,
+                    isBikeDriver,
+                    "You're Online — Searching for orders"
+                );
+                loadData();
             } else {
-                NativeBridgeService.stopFloatingWidget();
-
-                // Stop location task
-                const isStarted = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_RIDE_TASK);
-                if (isStarted) {
-                    await Location.stopLocationUpdatesAsync(BACKGROUND_RIDE_TASK);
-                }
+                NotificationEngine.stop();
+                await NotificationService.stopOnlineForegroundService();
+                setAvailableRides([]);
+                setAvailableFoodOrders([]);
+                setAvailableGroceryOrders([]);
             }
         } catch (taskErr: any) {
             console.warn('Background task setup failed:', taskErr?.message);

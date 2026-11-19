@@ -287,3 +287,26 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+-- =========================================================================
+-- 10. SERVER-SIDE PUSH DISPATCH INDEXES & WEBHOOK PROPOSAL (MANUAL APPROVAL)
+-- =========================================================================
+-- Purpose:
+--   Optimizes the online verified driver lookup query executed by the
+--   `notify-driver` Edge Function and documents the Database Webhooks
+--   required in Supabase Dashboard -> Database -> Webhooks.
+-- Dependencies:
+--   Requires `public.users(is_driver, is_online, rider_status, fcm_token)`
+--   and deployed `notify-driver` Edge Function.
+-- Preconditions:
+--   Section 6 (`fcm_token` column on `public.users`) must be applied first.
+-- Safety:
+--   `CREATE INDEX IF NOT EXISTS` is non-destructive and read-safe.
+--   No existing tables, columns, RLS policies, or RPC signatures are altered.
+-- Rollback:
+--   `DROP INDEX IF EXISTS public.idx_users_online_verified_fcm;`
+
+CREATE INDEX IF NOT EXISTS idx_users_online_verified_fcm
+    ON public.users (is_driver, is_online, rider_status)
+    WHERE is_driver = true AND is_online = true AND fcm_token IS NOT NULL;
+
+

@@ -1,47 +1,75 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Platform, Alert } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { colors, Fonts } from '@/constants/colors';
+import { useAuth } from '@/contexts/auth-context';
+import { NativeBridgeService } from '@/services/native-bridge.service';
+import { NotificationService } from '@/services/notification.service';
+import { registerDriverPushToken } from '@/services/push-token.service';
 import { Feather } from '@expo/vector-icons';
-import { router } from 'expo-router';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
-import { NativeBridgeService } from '@/services/native-bridge.service';
-import { colors, Fonts } from '@/constants/colors';
+import { router } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+    Alert,
+    AppState,
+    Linking,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function PermissionsScreen() {
+    const { driver } = useAuth();
     const [fgLocationGranted, setFgLocationGranted] = useState(false);
     const [bgLocationGranted, setBgLocationGranted] = useState(false);
     const [notificationsGranted, setNotificationsGranted] = useState(false);
-    const [overlayGranted, setOverlayGranted] = useState(true); // Default true for iOS
+    const [overlayGranted, setOverlayGranted] = useState(false);
+
+    const checkPermissions = useCallback(async () => {
+        try {
+            const fgRes = await Location.getForegroundPermissionsAsync();
+            setFgLocationGranted(fgRes.status === 'granted');
+
+            const bgRes = await Location.getBackgroundPermissionsAsync();
+            setBgLocationGranted(bgRes.status === 'granted');
+
+            const notifRes = await Notifications.getPermissionsAsync();
+            setNotificationsGranted(notifRes.status === 'granted');
+
+            const canDraw = await NativeBridgeService.checkDrawOverAppsPermission();
+            setOverlayGranted(canDraw);
+        } catch (err) {
+            console.warn('[Permissions] Error checking permissions:', err);
+        }
+    }, []);
 
     useEffect(() => {
         checkPermissions();
-    }, []);
-
-    const checkPermissions = async () => {
-        // Foreground Location
-        const fgRes = await Location.getForegroundPermissionsAsync();
-        setFgLocationGranted(fgRes.status === 'granted');
-
-        // Background Location
-        const bgRes = await Location.getBackgroundPermissionsAsync();
-        setBgLocationGranted(bgRes.status === 'granted');
-
-        // Notifications
-        const notifRes = await Notifications.getPermissionsAsync();
-        setNotificationsGranted(notifRes.status === 'granted');
-
-        // Overlay (Draw over apps)
-        if (Platform.OS === 'android') {
-            const overlay = await NativeBridgeService.checkDrawOverAppsPermission();
-            setOverlayGranted(overlay);
-        }
-    };
+        const sub = AppState.addEventListener('change', (state) => {
+            if (state === 'active') {
+                checkPermissions();
+            }
+        });
+        return () => sub.remove();
+    }, [checkPermissions]);
 
     const requestForegroundLocation = async () => {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        setFgLocationGranted(status === 'granted');
-        if (status === 'granted') checkPermissions();
+        const res = await Location.requestForegroundPermissionsAsync();
+        setFgLocationGranted(res.status === 'granted');
+        if (res.status === 'granted') {
+            checkPermissions();
+        } else if (!res.canAskAgain) {
+            Alert.alert(
+                'Location Permission Required',
+                'Please enable Location permission in Android Settings ("Allow while using the app" or "Allow all the time") to receive nearby delivery requests.',
+                [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Open Settings', onPress: () => Linking.openSettings() },
+                ]
+            );
+        }
     };
 
     const requestBackgroundLocation = async () => {
@@ -49,33 +77,61 @@ export default function PermissionsScreen() {
             Alert.alert('Required', 'Please grant Foreground Location permission first.');
             return;
         }
-        const { status } = await Location.requestBackgroundPermissionsAsync();
-        setBgLocationGranted(status === 'granted');
-        if (status === 'granted') checkPermissions();
+        const res = await Location.requestBackgroundPermissionsAsync();
+        setBgLocationGranted(res.status === 'granted');
+        if (res.status === 'granted') {
+            checkPermissions();
+        } else if (!res.canAskAgain) {
+            Alert.alert(
+                'Background Location Required',
+                'Please select "Allow all the time" under Location permissions in Android Settings so QPartner can keep you online and dispatch nearby orders while minimized.',
+                [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Open Settings', onPress: () => Linking.openSettings() },
+                ]
+            );
+        }
     };
 
     const requestNotifications = async () => {
-        const { status } = await Notifications.requestPermissionsAsync();
-        setNotificationsGranted(status === 'granted');
-        if (status === 'granted') checkPermissions();
+        await NotificationService.createAndroidChannels();
+        const res = await Notifications.requestPermissionsAsync();
+        const granted = res.status === 'granted';
+        setNotificationsGranted(granted);
+        if (granted) {
+            if (driver?.id) {
+                registerDriverPushToken(driver.id).catch(console.warn);
+            }
+            checkPermissions();
+        } else if (!res.canAskAgain) {
+            Alert.alert(
+                'Notifications Disabled',
+                'Notification permission is required to alert you with sound and vibration when new delivery orders arrive in the background.',
+                [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Open Settings', onPress: () => Linking.openSettings() },
+                ]
+            );
+        }
     };
 
-    const requestOverlay = async () => {
-        NativeBridgeService.requestDrawOverAppsPermission();
-        Alert.alert(
-            'Settings Opened',
-            'Please find Quickora in the list, enable "Allow display over other apps", then return and press "Check Again".'
-        );
-    };
+    const allGranted = fgLocationGranted && bgLocationGranted && notificationsGranted;
 
-    const allGranted = fgLocationGranted && bgLocationGranted && notificationsGranted && overlayGranted;
+    const handleContinue = async () => {
+        if (!allGranted) return;
+        await NotificationService.createAndroidChannels();
+        if (driver?.id) {
+            registerDriverPushToken(driver.id).catch(console.warn);
+        }
+        router.replace('/(tabs)/bookings');
+    };
 
     return (
         <SafeAreaView style={styles.container}>
             <View style={styles.header}>
                 <Text style={styles.title}>Required Permissions</Text>
                 <Text style={styles.subtitle}>
-                    To receive ride requests efficiently and alert you while using other apps, Quickora requires the following permissions.
+                    To keep you online in the background and alert you immediately when new delivery orders arrive, QPartner requires the following permissions.
                 </Text>
             </View>
 
@@ -83,7 +139,7 @@ export default function PermissionsScreen() {
                 {/* Foreground Location */}
                 <PermissionCard
                     title="Foreground Location"
-                    description="To find nearby rides and track your ongoing trips."
+                    description="To find nearby orders and navigate pickup and drop-off routes."
                     icon="map-pin"
                     granted={fgLocationGranted}
                     onPress={requestForegroundLocation}
@@ -92,7 +148,7 @@ export default function PermissionsScreen() {
                 {/* Background Location */}
                 <PermissionCard
                     title="Background Location"
-                    description="Crucial to keep the app actively searching for rides in the background, so you never miss an order."
+                    description="Keeps your online availability active while QPartner is minimized or another app is open."
                     icon="navigation"
                     granted={bgLocationGranted}
                     onPress={requestBackgroundLocation}
@@ -100,40 +156,35 @@ export default function PermissionsScreen() {
 
                 {/* Notifications */}
                 <PermissionCard
-                    title="Notifications"
-                    description="To alert you about new bookings and messages."
+                    title="Order Alert Notifications"
+                    description="Required for high-priority sound, vibration, and lock-screen order alerts."
                     icon="bell"
                     granted={notificationsGranted}
                     onPress={requestNotifications}
                 />
 
-                {/* Draw Over Other Apps (Overlay) */}
-                {Platform.OS === 'android' && (
+                {/* Floating Order Receiver Card Overlay (Rapido / Zomato Style) */}
+                {NativeBridgeService.isAndroid ? (
                     <PermissionCard
-                        title="Display Over Other Apps"
-                        description="Allows the app to show a floating card with order details even if you are using YouTube or WhatsApp."
+                        title="Floating Order Card (Draw Over Apps)"
+                        description="Displays incoming order cards on top of any app or when QPartner is closed."
                         icon="layers"
                         granted={overlayGranted}
-                        onPress={requestOverlay}
+                        onPress={() => NativeBridgeService.requestDrawOverAppsPermission()}
                     />
-                )}
+                ) : null}
             </ScrollView>
 
             <View style={styles.footer}>
                 {!allGranted ? (
-                    <TouchableOpacity
-                        style={styles.checkAgainButton}
-                        onPress={checkPermissions}
-                    >
+                    <TouchableOpacity style={styles.checkAgainButton} onPress={checkPermissions}>
                         <Text style={styles.checkAgainText}>Check Again</Text>
                     </TouchableOpacity>
                 ) : null}
 
                 <TouchableOpacity
                     style={[styles.continueButton, !allGranted && styles.continueDisabled]}
-                    onPress={() => {
-                        if (allGranted) router.replace('/(tabs)/bookings');
-                    }}
+                    onPress={handleContinue}
                     disabled={!allGranted}
                 >
                     <Text style={styles.continueText}>Continue</Text>
@@ -184,17 +235,40 @@ const styles = StyleSheet.create({
     },
     cardGranted: { borderColor: colors.success, backgroundColor: colors.successLight + '20' },
     cardIcon: {
-        width: 44, height: 44, borderRadius: 22, backgroundColor: colors.primaryLight,
-        alignItems: 'center', justifyContent: 'center'
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        backgroundColor: colors.primaryLight,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     cardText: { flex: 1 },
     cardTitle: { fontFamily: Fonts.bold, fontSize: 16, color: colors.text, marginBottom: 4 },
     cardDesc: { fontFamily: Fonts.regular, fontSize: 12, color: colors.textSecondary, lineHeight: 18 },
     grantButton: { backgroundColor: colors.primary, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
     grantButtonText: { fontFamily: Fonts.bold, fontSize: 12, color: colors.white },
-    grantedBadge: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.success, alignItems: 'center', justifyContent: 'center' },
-    footer: { padding: 24, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border, gap: 12 },
-    checkAgainButton: { padding: 16, alignItems: 'center', borderRadius: 16, borderWidth: 1, borderColor: colors.primary },
+    grantedBadge: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        backgroundColor: colors.success,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    footer: {
+        padding: 24,
+        backgroundColor: colors.surface,
+        borderTopWidth: 1,
+        borderTopColor: colors.border,
+        gap: 12,
+    },
+    checkAgainButton: {
+        padding: 16,
+        alignItems: 'center',
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: colors.primary,
+    },
     checkAgainText: { fontFamily: Fonts.bold, fontSize: 16, color: colors.primary },
     continueButton: { backgroundColor: colors.primary, padding: 16, alignItems: 'center', borderRadius: 16 },
     continueDisabled: { backgroundColor: colors.border },

@@ -79,13 +79,29 @@ export class GroceryDriverService {
                 updatePayload.driver_id = driverId;
             }
 
-            const { data, error } = await supabase
+            let { data, error } = await supabase
                 .from('orders')
                 .update(updatePayload)
                 .eq('id', orderId)
                 .eq('status', 'preparing')
                 .select(ORDER_COLUMNS_WITH_STORE)
                 .single();
+
+            // Fallback if `driver_id` column is not yet added to `public.orders` in production
+            if (error && (error.code === '42703' || error.message?.includes('driver_id'))) {
+                const fallbackRes = await supabase
+                    .from('orders')
+                    .update({
+                        status: 'out_for_delivery',
+                        updated_at: new Date().toISOString(),
+                    })
+                    .eq('id', orderId)
+                    .eq('status', 'preparing')
+                    .select(ORDER_COLUMNS_WITH_STORE)
+                    .single();
+                data = fallbackRes.data;
+                error = fallbackRes.error;
+            }
 
             if (error || !data) {
                 if (error?.message?.includes('Failed to fetch') || error?.message?.includes('network')) {
@@ -174,9 +190,23 @@ export class GroceryDriverService {
                 query = query.eq('driver_id', driverId);
             }
 
-            const { data, error } = await query
+            let { data, error } = await query
                 .select(ORDER_COLUMNS_WITH_STORE)
                 .single();
+
+            if (error && driverId && (error.code === '42703' || error.message?.includes('driver_id'))) {
+                const fallbackRes = await supabase
+                    .from('orders')
+                    .update({
+                        status: nextStatus,
+                        updated_at: new Date().toISOString(),
+                    })
+                    .eq('id', orderId)
+                    .select(ORDER_COLUMNS_WITH_STORE)
+                    .single();
+                data = fallbackRes.data;
+                error = fallbackRes.error;
+            }
 
             if (error || !data) {
                 if (error?.message?.includes('Failed to fetch') || error?.message?.includes('network')) {

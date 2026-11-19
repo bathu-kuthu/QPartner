@@ -25,13 +25,18 @@
       "package": "com.quickora.qpartner",
       "googleServicesFile": "./google-services.json",
       "permissions": [
-        "android.permission.RECORD_AUDIO",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_BACKGROUND_LOCATION",
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_LOCATION",
-        "android.permission.WAKE_LOCK"
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.VIBRATE",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.WAKE_LOCK",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.USE_FULL_SCREEN_INTENT",
+        "android.permission.FOREGROUND_SERVICE_SPECIAL_USE"
       ]
     },
     "web": {
@@ -40,6 +45,7 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      "./plugins/withDriverOverlayService.js",
       "expo-router",
       "expo-font",
       [
@@ -47,7 +53,7 @@
         {
           "icon": "./assets/images/icon.png",
           "color": "#1565C0",
-          "defaultChannel": "default",
+          "defaultChannel": "bookings",
           "sounds": [
             "./assets/sounds/booking_alert.wav"
           ]

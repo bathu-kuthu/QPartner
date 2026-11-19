@@ -143,6 +143,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const logout = async () => {
         try {
+            // Stop any active incoming order alerts and ongoing foreground service immediately
+            try {
+                const [{ NotificationEngine }, { NotificationService }, { clearBackgroundTaskData }] =
+                    await Promise.all([
+                        import('@/services/notification-engine.service'),
+                        import('@/services/notification.service'),
+                        import('@/services/background-task'),
+                    ]);
+                NotificationEngine.stop();
+                await NotificationService.stopOnlineForegroundService();
+                await clearBackgroundTaskData();
+            } catch (cleanupErr) {
+                console.warn('Failed to stop background services on logout:', cleanupErr);
+            }
+
             if (driver?.id) {
                 // Set driver offline in DB so they don't appear in dispatch pool
                 try {
@@ -159,15 +174,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 unregisterDriverPushToken(driver.id).catch((e) =>
                     console.warn('Failed to clear FCM token on logout:', e)
                 );
-
-                // Clear SecureStore background task keys
-                try {
-                    const SecureStore = await import('expo-secure-store');
-                    await SecureStore.deleteItemAsync('driver_id');
-                    await SecureStore.deleteItemAsync('driver_service_types');
-                } catch {
-                    // Ignore on platforms without SecureStore
-                }
             }
             await AsyncStorage.removeItem(DRIVER_STORAGE_KEY);
             setDriverState(null);
